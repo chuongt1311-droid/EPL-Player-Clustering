@@ -476,3 +476,21 @@ All files in `D:\CT's Portfolio\Practice\Player Roles\`:
 | `Pass_Archetypes_Plan.md` | running plan and decisions |
 
 Environment: `D:/CT's Portfolio/bzzoiro pipeline/scout/.venv-metrics` (pandas, scikit-learn). Random seeds: fit sample 0, evaluation sample 99, k-means random_state 0 (final model). The five-fold validation of xP on 2024/25 was run from scratch scripts that are not in this folder; the all-season xP is produced by `build_pass_table.py`.
+
+## Update (7 Nov 2026): a cutoff and a number of groups for each position
+
+**Why.** I felt four groups were too few to show all the archetypes, and that attackers were being cut too hard: they pass about 27 times per 90 minutes against 40 (defenders) and 43 (midfielders), so a flat 500-pass cutoff kept 75% of defenders and midfielders but only 49% of attackers.
+
+**Cutoffs.** I rebuilt the player table with a floor of 150 passes and measured split-half reliability (odd against even matches, Spearman-Brown corrected) in 100-pass windows within each position. One rule for all: the lowest cutoff whose next window reaches about 0.80. Result: **200 passes for defenders, 350 for midfielders, 350 for attackers**. That keeps 1,945 defender, 1,259 midfielder and 977 attacker player-seasons (before: 1,517, 1,107, 699). Midfielders need more passes than defenders because their mixes are less distinct.
+
+**Number of groups.** k from 2 to 12 per position, with five checks (silhouette, bootstrap ARI, odd-vs-even-match agreement, early-vs-late-era agreement, smallest group). Stability drops fast after k = 3 or 4 everywhere, and the cutoff changes it only by a few hundredths. At k = 6 or 7 the same player lands in the same group only about half the time when his odd and even matches are clustered separately (a pessimistic test, since each half has half the passes).
+
+| | Types (stable) | Bootstrap ARI | Odd/even ARI | Era ARI | Styles (finer) | Bootstrap ARI | Odd/even ARI | Era ARI |
+|---|---|---|---|---|---|---|---|---|
+| Defenders | k = 4 | 0.86 | 0.70 | 0.66 | k = 7 | 0.89 | 0.51 | 0.51 |
+| Midfielders | k = 3 | 0.90 | 0.57 | 0.62 | k = 5 | 0.82 | 0.46 | 0.35 |
+| Attackers | k = 4 | 0.88 | 0.55 | 0.53 | k = 6 | 0.82 | 0.45 | 0.47 |
+
+**Decision.** Two levels. **Types** are the largest clearly stable k and carry the conclusions. **Styles** are local stability peaks: more interesting (for defenders: overlapping, crossing and inverted full-backs; diagonal, ball-progressing, direct and wide centre-backs; for attackers: crossers, wing-combination wingers, inside forwards, roaming creators, link-up strikers) but with wobbly borders, so they are labelled fuzzy. The page has a switch.
+
+**A negative result.** There is no "recycler" midfielder. The Recycle share is 7 to 10% in every midfield group, and clustering midfielders on average completion probability, share of backward or sideways passes and average pass length gives one smooth line from safe to forward (silhouette 0.33 at k = 2, no better beyond). Finding recyclers would need features built around risk, not around where passes go.

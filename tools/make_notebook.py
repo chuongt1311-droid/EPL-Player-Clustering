@@ -612,30 +612,87 @@ This is the original idea I set out to imitate (k-means on **players**, coloured
 **Design.**
 - Players are grouped *within position*: defenders, midfielders, and attackers (wide players and forwards). Goalkeepers are left out.
 - One clustering per position over **all seasons pooled**, so a group means the same thing in every season and a player can *move* between groups over time.
-- The number of groups is chosen by silhouette and a bootstrap stability check (20 pairs of 80% resamples), not by eye.
-- Fitted on player-seasons with 500+ passes. The current season (2026/27, only 8 matches per team old) is assigned afterwards to the nearest group, for players with 200+ passes.
+- **Each position gets its own pass cutoff** (10.1) and its own number of groups (10.2). Attackers pass far less than defenders and midfielders, so a flat cutoff throws away half of them.
+- **Two levels:** a few *types* that are stable enough to draw conclusions from, and more *styles* that are finer but fuzzier (10.3).
+- The current season (2026/27, only 8 matches per team old) is assigned afterwards to the nearest group, for players with 200+ passes.
+
+### 10.1 A pass cutoff for each position
+A player-season is only usable if his nine shares are measured reliably. I rebuilt the player table with a low floor (150 passes) and measured **split-half reliability** (odd matches against even matches, Spearman-Brown corrected, mean of the nine shares) inside 100-pass windows, within position.
 """)
 code("""
+from scipy.optimize import linear_sum_assignment
 GROUPS = {'DEF': 'Defenders', 'MID': 'Midfielders', 'ATT': 'Attackers (wide players and forwards)'}
-S['grp'] = np.where(S.role == 'GK', 'GK', np.where(S.role == 'DEF', 'DEF', np.where(S.role == 'MID', 'MID', 'ATT')))
-rng = np.random.default_rng(0); sweeps = {}
-for gname in GROUPS:
-    D = S[S.grp == gname].reset_index(drop=True); X = np.sqrt(D[sc].to_numpy()); rows = []
-    for k in range(2, 8):
-        km_ = KMeans(k, n_init=20, random_state=0).fit(X); aris = []
-        for b in range(20):
-            i = rng.choice(len(X), int(.8 * len(X)), replace=False); jj = rng.choice(len(X), int(.8 * len(X)), replace=False)
-            aris.append(ari(KMeans(k, n_init=5, random_state=b).fit(X[i]).predict(X), KMeans(k, n_init=5, random_state=b + 100).fit(X[jj]).predict(X)))
-        rows.append(dict(k=k, silhouette=silhouette_score(X, km_.labels_), stability_ari=np.mean(aris), smallest_group=np.bincount(km_.labels_).min() / len(X)))
-    sweeps[gname] = pd.DataFrame(rows).set_index('k'); print(GROUPS[gname], f'({len(D):,} player-seasons)'); display(sweeps[gname])
+PTN = ['Recycle', 'Link-up', 'Wing Combo', 'Diagonal', 'Cross', 'Out-Ball', 'Push Wide', 'Down-the-Line', 'Long Ball']
+S2 = table(150, seasons=[s for s in SEASONS if s != '2026-27'])
+S2['grp'] = np.where(S2.role == 'GK', 'GK', np.where(S2.role == 'DEF', 'DEF', np.where(S2.role == 'MID', 'MID', 'ATT')))
+S2 = S2.merge(xt_sum.reset_index(), on=['player_id', 'season'], how='left'); S2['xt90'] = S2.xt_sum / S2.minutes * 9000; S2.loc[S2.minutes < 900, 'xt90'] = np.nan
+S2['p90'] = S2.n_passes / S2.minutes * 90
+gm = pp[['player_id', 'season', 'game_id', 'date']].drop_duplicates().sort_values(['player_id', 'season', 'date', 'game_id']); gm['half'] = gm.groupby(['player_id', 'season']).cumcount() % 2
+q = pp.merge(gm[['player_id', 'season', 'game_id', 'half']], on=['player_id', 'season', 'game_id']); idx2 = pd.MultiIndex.from_frame(S2[['player_id', 'season']])
+HALF = [pd.crosstab([d.player_id, d.season], d.cl).reindex(idx2).fillna(0).to_numpy() for _, d in q.groupby('half')]; del q, gm
+def rel(m):                      # mean split-half reliability of the nine shares for the rows in mask m
+    A, B = [h[m] / h[m].sum(1, keepdims=True) for h in HALF]; r = np.array([np.corrcoef(A[:, c], B[:, c])[0, 1] for c in range(9)]); return np.nanmean(2 * r / (1 + r))
+print('median open-play passes per 90 minutes:', S2[S2.grp.isin(GROUPS)].groupby('grp').p90.median().round(0).to_dict())
+rows = []
+for lo in range(150, 551, 50):
+    row = {'passes from': lo}
+    for g_ in GROUPS:
+        m = ((S2.grp == g_) & (S2.n_passes >= lo) & (S2.n_passes < lo + 100)).to_numpy(); row[g_ + ' n'] = int(m.sum()); row[g_ + ' reliability'] = rel(m)
+    rows.append(row)
+print('reliability of the nine shares for player-seasons with lo to lo+100 passes:'); display(pd.DataFrame(rows).set_index('passes from').round(2))
 """)
 md("""
-**Reading it.** Two groups is always the clearest split, but for defenders it only recovers centre-backs against full-backs, which is just position. I take the **largest k that is still stable**: **4 for defenders, 3 for midfielders, 4 for attackers**. Beyond that stability falls away.
-
-Fit the final groups, and name each by its most-used passes. The cluster numbers that k-means returns are arbitrary, so the names are attached by rule on the group's average mix.
+**Reading it.** Reliability climbs with the number of passes in every position, but defenders reach about 0.85 at 200 passes, while midfielders and attackers need about 350 to get to 0.80. Midfielders' mixes are the least distinct, so they need more passes for the same reliability. I use one rule for all three: **the lowest cutoff whose next 100-pass window reaches reliability of about 0.80**. That is 200 for defenders, 350 for midfielders and 350 for attackers.
 """)
 code("""
-KSEL = {'DEF': 4, 'MID': 3, 'ATT': 4}
+CUTS = {'DEF': 200, 'MID': 350, 'ATT': 350}
+tab = []
+for g_ in GROUPS:
+    d = S2[S2.grp == g_]; tab.append(dict(position=GROUPS[g_].split(' (')[0], kept_at_500=int((d.n_passes >= 500).sum()), pct_kept_at_500=round(100 * (d.n_passes >= 500).mean()), cutoff=CUTS[g_], kept_at_cutoff=int((d.n_passes >= CUTS[g_]).sum()), reliability_at_cutoff=round(rel((S2.grp == g_).to_numpy() & (S2.n_passes >= CUTS[g_]).to_numpy()), 3)))
+display(pd.DataFrame(tab).set_index('position'))
+""")
+md("""
+**Reading it.** A flat 500-pass cutoff kept three quarters of defenders and midfielders but only about half of the attackers, who simply pass less. With a cutoff per position I keep roughly 28% more defenders, 14% more midfielders and 40% more attackers, at about the same overall reliability. Attackers still have the fewest rows because there are fewer of them.
+
+### 10.2 How many groups? A sweep per position
+For each position, at its own cutoff, k from 2 to 12 with five checks:
+- **silhouette** (how separate the groups are),
+- **bootstrap stability**: ARI between two clusterings fitted on different 80% resamples, both predicting everyone,
+- **half-vs-half agreement**: cluster on all matches, then assign each player's odd-match mix and even-match mix separately and compare (ARI). This is pessimistic because each half has half the passes,
+- **era stability**: ARI between a clustering fitted on 2013/14-2019/20 and one on 2020/21 onward, both predicting everyone,
+- **smallest group** as a share of the position.
+""")
+code("""
+fk = CACHE / 'k_sweep.csv'
+if fk.exists(): SW = pd.read_csv(fk)
+else:
+    rng = np.random.default_rng(0); rows = []
+    for g_ in GROUPS:
+        msk = ((S2.grp == g_) & (S2.n_passes >= CUTS[g_])).to_numpy(); D = S2[msk].reset_index(drop=True); X = np.sqrt(D[sc].to_numpy())
+        HA, HB = [np.sqrt(h[msk] / h[msk].sum(1, keepdims=True)) for h in HALF]; early = (D.season <= '2019-20').to_numpy()
+        for k in range(2, 13):
+            km_ = KMeans(k, n_init=20, random_state=0).fit(X); bs = []
+            for b in range(20):
+                i = rng.choice(len(X), int(.8 * len(X)), replace=False); jj = rng.choice(len(X), int(.8 * len(X)), replace=False)
+                bs.append(ari(KMeans(k, n_init=5, random_state=b).fit(X[i]).predict(X), KMeans(k, n_init=5, random_state=b + 100).fit(X[jj]).predict(X)))
+            rows.append(dict(pos=g_, n=len(D), k=k, silhouette=silhouette_score(X, km_.labels_), bootstrap_ari=np.mean(bs), half_vs_half_ari=ari(km_.predict(HA), km_.predict(HB)),
+                             era_ari=ari(KMeans(k, n_init=10, random_state=1).fit(X[early]).predict(X), KMeans(k, n_init=10, random_state=2).fit(X[~early]).predict(X)), smallest_group=np.bincount(km_.labels_).min() / len(X)))
+    SW = pd.DataFrame(rows); SW.to_csv(fk, index=False)
+for g_ in GROUPS: print(GROUPS[g_], f'({int(SW[SW.pos == g_].n.iloc[0]):,} player-seasons, cutoff {CUTS[g_]} passes)'); display(SW[SW.pos == g_].drop(columns=['pos', 'n']).set_index('k').round(2))
+""")
+md("""
+**Reading it.**
+- **Stability falls fast after k = 3 or 4 in every position.** Two groups is always the clearest split (for defenders it is just centre-backs against full-backs). By k = 6 or 7 the same player lands in the same group only about half the time when his odd and even matches are clustered separately, and early and late seasons find different groups.
+- **A few k values beat their neighbours** on bootstrap stability: **k = 7 for defenders** (about 0.9), **k = 5 for midfielders** (about 0.8) and **k = 6 for attackers** (about 0.8). They are local peaks, not strong ones.
+- The cutoff matters little: lowering it changes these numbers by a few hundredths.
+
+So I keep two levels. The **types** (4 defenders, 3 midfielders, 4 attackers) are the largest k that is still clearly stable, and are what I draw conclusions from. The **styles** (7, 5, 6) are the local stability peaks: finer, more interesting, but their borders wobble. Read them as neighbourhoods on a continuum, not as hard categories.
+
+### 10.3 Fit both levels and name the groups
+The cluster numbers that k-means returns are arbitrary, so names are attached by rule: each group's average mix, in standard deviations from the position average, is matched to a written prototype (an optimal one-to-one assignment). The printed examples let you check the names by eye.
+""")
+code("""
+KSEL = {'DEF': 4, 'MID': 3, 'ATT': 4}; KFINE = {'DEF': 7, 'MID': 5, 'ATT': 6}
 TYPE_NAMES = {
     'DEF': [('Overlapping full-backs', '#c8553d', 'Wing combinations, down-the-line balls and crosses from the touchline.'), ('Hybrid full-backs', '#e09f3e', 'Full-backs who recycle, combine and play more inside.'),
             ('Distributor centre-backs', '#1d4e89', 'Diagonals and out-balls from deep.'), ('Direct centre-backs', '#6b7a8f', 'Fewer diagonals, more down-the-line and long balls.')],
@@ -643,7 +700,27 @@ TYPE_NAMES = {
             ('Balanced midfielders', '#2a9d8f', 'A mix of everything, with more down-the-line and long balls.')],
     'ATT': [('Combination wingers', '#c8553d', 'Mostly wing combinations: short passes on the wing in the final third.'), ('Link-up forwards', '#1d4e89', 'Link-up passes through the middle; low threat per 90.'),
             ('Crossing wide players', '#e09f3e', 'Crosses and down-the-line balls from wide.'), ('Inside creators', '#2a9d8f', 'Link-ups, pushes wide and wing combinations from inside positions.')]}
-def name_clusters(gname, M):                      # M: k x 9 mean shares; returns {cluster id: index into TYPE_NAMES[gname]}
+# finer styles: (name, colour, description, prototype = how the style differs from its position average, in the nine pass types)
+STYLES = {
+    'DEF': [('Overlapping full-backs', '#c8553d', 'The purest wing combiners: a third of their passes are wing combinations, plus crosses.', {'Wing Combo': 1, 'Cross': .3, 'Out-Ball': -.3}),
+            ('Crossing full-backs', '#e09f3e', 'Down-the-line balls, wing combinations and crosses.', {'Down-the-Line': 1, 'Wing Combo': .5, 'Cross': .4, 'Long Ball': .3}),
+            ('Inverted full-backs', '#b5838d', 'Recycle, link up and push wide from inside: full-backs who act like midfielders.', {'Recycle': 1, 'Link-up': 1, 'Push Wide': .8, 'Wing Combo': .3}),
+            ('Wide centre-backs', '#6b7a8f', 'Centre-backs (or hybrids) whose passing goes down the line.', {'Down-the-Line': 1, 'Wing Combo': .2, 'Long Ball': .3, 'Recycle': .3}),
+            ('Ball-progressing centre-backs', '#2a9d8f', 'Diagonals and out-balls, plus pushes wide and link-ups: they move the ball up.', {'Diagonal': .8, 'Out-Ball': .6, 'Push Wide': 1, 'Link-up': .6}),
+            ('Diagonal centre-backs', '#1d4e89', 'A quarter diagonals and a quarter out-balls: the switchers.', {'Diagonal': 1, 'Out-Ball': 1, 'Wing Combo': -.5}),
+            ('Direct centre-backs', '#7d5ba6', 'Out-balls with more long balls and fewer short passes.', {'Out-Ball': .8, 'Long Ball': 1, 'Diagonal': .5, 'Recycle': -.3})],
+    'MID': [('Attacking creators', '#c8553d', 'Wing combinations and crosses in the attacking half.', {'Wing Combo': 1, 'Cross': .4, 'Out-Ball': -.5}),
+            ('Link-up midfielders', '#e09f3e', 'Link-ups, wing combinations and pushes wide.', {'Link-up': 1, 'Wing Combo': .6, 'Push Wide': .4}),
+            ('Deep circulators', '#1d4e89', 'Out-balls, diagonals, link-ups and pushes wide; few wing combinations.', {'Out-Ball': .7, 'Diagonal': .7, 'Link-up': .5, 'Push Wide': .5, 'Wing Combo': -.6}),
+            ('Long-passing midfielders', '#7d5ba6', 'Out-balls, diagonals and long balls from deep.', {'Out-Ball': .8, 'Diagonal': .8, 'Long Ball': 1, 'Link-up': -.4}),
+            ('All-round midfielders', '#2a9d8f', 'Close to the average midfielder, with a little more down-the-line.', {'Down-the-Line': .8, 'Recycle': .4, 'Long Ball': .3})],
+    'ATT': [('Crossing wide players', '#e09f3e', 'Crosses and down-the-line balls from wide.', {'Cross': 1, 'Down-the-Line': .8, 'Long Ball': .5, 'Link-up': -.5}),
+            ('Wing-combination wingers', '#c8553d', 'Over 40% wing combinations.', {'Wing Combo': 1, 'Recycle': .3, 'Link-up': -.4}),
+            ('All-round wingers', '#6b7a8f', 'Close to the average wide player.', {'Recycle': .3, 'Down-the-Line': .3, 'Wing Combo': .2}),
+            ('Roaming creators', '#2a9d8f', 'Pushes wide, out-balls and diagonals: attackers who drift and switch play.', {'Push Wide': 1, 'Out-Ball': .6, 'Diagonal': .6, 'Wing Combo': -.5}),
+            ('Inside forwards', '#7d5ba6', 'Link-ups, wing combinations and pushes wide from inside.', {'Link-up': .8, 'Wing Combo': .6, 'Push Wide': .6}),
+            ('Link-up strikers', '#1d4e89', 'A third of passes are link-ups through the middle.', {'Link-up': 1, 'Wing Combo': -.6, 'Recycle': -.4})]}
+def name_clusters(gname, M):                      # core types. M: k x 9 mean shares; returns {cluster id: index into TYPE_NAMES[gname]}
     k = len(M); left = set(range(k)); out = {}
     def take(score, idx):
         c = max(left, key=score); out[c] = idx; left.discard(c)
@@ -655,19 +732,33 @@ def name_clusters(gname, M):                      # M: k x 9 mean shares; return
     else:
         take(lambda c: M[c, 2], 0); take(lambda c: M[c, 1], 1); take(lambda c: M[c, 4], 2); out[next(iter(left))] = 3
     return out
+def name_styles(gname, D, lab):                   # finer styles: optimal one-to-one match of each group's z-profile to a prototype
+    k = len(STYLES[gname]); mu, sd = D[sc].mean().to_numpy(), D[sc].std().to_numpy()
+    Zc = np.array([(D[lab == c][sc].mean().to_numpy() - mu) / sd for c in range(k)])
+    P_ = np.array([[st[3].get(PTN[j], 0) for j in range(9)] for st in STYLES[gname]], float); P_ /= np.linalg.norm(P_, axis=1, keepdims=True)
+    r_, c_ = linear_sum_assignment(-(Zc @ P_.T)); return dict(zip(r_, c_))
 
 models = {}
 for gname in GROUPS:
-    D = S[S.grp == gname].reset_index(drop=True); X = np.sqrt(D[sc].to_numpy()); km_ = KMeans(KSEL[gname], n_init=50, random_state=0).fit(X)
-    D['c0'] = km_.labels_; M = np.array([D[D.c0 == c][sc].mean().to_numpy() for c in range(KSEL[gname])]) * 100; mp = name_clusters(gname, M)
+    D = S2[(S2.grp == gname) & (S2.n_passes >= CUTS[gname])].reset_index(drop=True); X = np.sqrt(D[sc].to_numpy()); km_ = KMeans(KSEL[gname], n_init=50, random_state=0).fit(X); kf_ = KMeans(KFINE[gname], n_init=50, random_state=0).fit(X)
+    D['c0'] = km_.labels_; D['c2'] = kf_.labels_; M = np.array([D[D.c0 == c][sc].mean().to_numpy() for c in range(KSEL[gname])]) * 100; mp = name_clusters(gname, M); mp2 = name_styles(gname, D, kf_.labels_)
+    assert len(set(mp.values())) == KSEL[gname] and len(set(mp2.values())) == KFINE[gname]
     pca_ = PCA(2).fit(X); L = pca_.components_.copy()
     if L[0, 2] < 0: L[0] *= -1; pca_.components_[0] *= -1                                 # right = more wing combos
     if (L[1, 1] + L[1, 6] - L[1, 7] - L[1, 8]) < 0: pca_.components_[1] *= -1                # up = more link-ups and pushes wide
-    models[gname] = dict(km=km_, pca=pca_, map=mp, M=M); tt = pd.DataFrame(M, columns=['Recycle', 'Link-up', 'Wing Combo', 'Diagonal', 'Cross', 'Out-Ball', 'Push Wide', 'Down-the-Line', 'Long Ball'])
-    tt.insert(0, 'type', [TYPE_NAMES[gname][mp[c]][0] for c in range(KSEL[gname])]); tt['players (player-seasons)'] = np.bincount(km_.labels_); tt['pass xT/90'] = [D[D.c0 == c].xt90.mean() if 'xt90' in D else np.nan for c in range(KSEL[gname])]
-    print(GROUPS[gname], '| PCA keeps', pca_.explained_variance_ratio_.sum().round(2), 'of the variation in two dimensions'); display(tt.round(1).sort_values('type'))
+    models[gname] = dict(km=km_, km2=kf_, pca=pca_, map=mp, map2=mp2, M=M)
+    tt = pd.DataFrame(M, columns=PTN); tt.insert(0, 'type', [TYPE_NAMES[gname][mp[c]][0] for c in range(KSEL[gname])]); tt['player-seasons'] = np.bincount(km_.labels_); tt['pass xT/90'] = [D[D.c0 == c].xt90.mean() for c in range(KSEL[gname])]
+    print(GROUPS[gname], f'| {len(D):,} player-seasons | PCA keeps', pca_.explained_variance_ratio_.sum().round(2), 'of the variation in two dimensions'); display(tt.round(1).sort_values('type'))
+    ts = pd.DataFrame(np.array([D[D.c2 == c][sc].mean().to_numpy() for c in range(KFINE[gname])]) * 100, columns=PTN); ts.insert(0, 'style', [STYLES[gname][mp2[c]][0] for c in range(KFINE[gname])])
+    ts['player-seasons'] = np.bincount(kf_.labels_); ts['pass xT/90'] = [D[D.c2 == c].xt90.mean() for c in range(KFINE[gname])]
+    ts['recent examples'] = [', '.join(D[(D.c2 == c) & (D.season >= '2021-22')].sort_values('n_passes', ascending=False).drop_duplicates('name').name.head(4)) for c in range(KFINE[gname])]; display(ts.round(1).sort_values('style'))
+    print('how the styles sit inside the types (rows = style, columns = type, share of the style, %):'); display((pd.crosstab(D.c2.map(lambda c: STYLES[gname][mp2[c]][0]), D.c0.map(lambda c: TYPE_NAMES[gname][mp[c]][0]), normalize='index') * 100).round(0).astype(int))
 """)
 md("""
+**Reading it.** The styles split the types sensibly: the full-back type separates into overlappers, crossers and inverted full-backs; the centre-back type into diagonal, ball-progressing, direct and wide centre-backs; attackers into crossers, wing-combination wingers, inside forwards, roaming creators and link-up strikers. A few players sit between styles from one season to the next, which is exactly the instability the sweep warned about.
+
+**What did *not* appear: a recycler midfielder.** The Recycle share (sideways and backward passes by the wide-back type) is only 7 to 10% in every midfield group. I also tried the idea directly: clustering midfielders on their average completion probability (xP), their share of backward or sideways passes and their average pass length gives one smooth line from safe to forward, with no separate group of recyclers (silhouette 0.33 at k = 2, no better beyond). A "recycler" would need different features than the nine types, which are designed to separate where passes go, not how safe they are.
+
 Players per group in the *current* season need a threshold of 200 passes (only 8 matches have been played). I check what that costs in reliability.
 """)
 code("""
@@ -683,57 +774,62 @@ hh = [pd.crosstab(d.player_id, d.cl).reindex(index=cur.player_id, columns=range(
 for gname in ('DEF', 'MID'):
     m = (cur.grp == gname).to_numpy(); rr = np.array([np.corrcoef(ha[m, c], hb[m, c])[0, 1] for c in range(9)]); print(f'{gname}: mean split-half reliability of the nine shares, full-sample scale: {np.nanmean(2 * rr / (1 + rr)):.2f}')
 """)
-md("**Reading it.** Within a position the current-season shares are less reliable (about 0.75 to 0.78, against 0.95 and more for a full season), so the page flags the current season as provisional.")
+md("**Reading it.** Within a position the current-season shares are less reliable (about 0.75 to 0.78, against 0.9 and more for a full season), so the page flags the current season as provisional.")
 
 md("""
-### 10.1 Putting every player-season on the map and building the page
-Each player-season (13 full seasons, plus the current one so far) gets: its group, coordinates on a **fixed map per position** (PCA of the nine shares), pass xT per 90, and the details shown on hover. The share of each group by season feeds the "how the types changed" chart. The page itself is written by `build_site.py` into `docs/index.html`, which GitHub Pages serves.
+### 10.4 Putting every player-season on the map and building the page
+Each player-season (13 full seasons at its position's cutoff, plus the current one so far) gets: its type and its style, coordinates on a **fixed map per position** (PCA of the nine shares), pass xT per 90, and the details shown on hover. The share of each group by season feeds the "how the types changed" chart. The page itself is written by `build_site.py` into `docs/index.html`, which GitHub Pages serves, with a switch between the stable **types** and the finer **styles**.
 """)
 code("""
 import sys; sys.path.insert(0, str(ROOT)); from build_site import build_site
-PTN = ['Recycle', 'Link-up', 'Wing Combo', 'Diagonal', 'Cross', 'Out-Ball', 'Push Wide', 'Down-the-Line', 'Long Ball']
 PART = {'van', 'de', 'da', 'di', 'der', 'dos', 'el', 'le', 'mac', 'al', 'ten', 'von', 'del'}
 def short(n):
     t = n.split(); return ' '.join(t[-2:]) if len(t) > 2 and t[-2].lower() in PART else (' '.join(t[-2:]) if len(t) == 2 and t[0].lower() in PART else t[-1])
-full = S[S.season != '2026-27']
+full = S2[S2.n_passes >= S2.grp.map(CUTS).fillna(10**9)]
 ALL = pd.concat([full, cur[full.columns.intersection(cur.columns)]], ignore_index=True)
-payload = dict(pt=PTN, ptcol=COL, ptdesc=DESC, seasons=SEASONS, partial='2026-27', minp=500, minp_partial=200, groups={})
-players_out = []
+payload = dict(pt=PTN, ptcol=COL, ptdesc=DESC, seasons=SEASONS, partial='2026-27', minp_partial=200, groups={})
+def build_types(D, tcol, names):
+    types = []
+    for ti, nm in enumerate(names):
+        m = D[D[tcol] == ti]; recent = m[m.season >= '2023-24'].sort_values('n_passes', ascending=False).drop_duplicates('name').name.head(4).map(short).tolist()
+        z = (m[sc].mean().to_numpy() - D[sc].mean().to_numpy()) / D[sc].std().to_numpy(); top = sorted(np.argsort(-z)[:3], key=lambda t: -m[sc[t]].mean())
+        types.append(dict(id=ti, name=nm[0], color=nm[1], desc=nm[2] + (f' E.g. {", ".join(recent)}.' if recent else ''), sig=' · '.join(f'{PTN[t]} {m[sc[t]].mean() * 100:.0f}%' for t in top), mix=[round(float(v * 100), 1) for v in m[sc].mean()]))
+    return types
 for gname in GROUPS:
     mdl = models[gname]; D = ALL[ALL.grp == gname].reset_index(drop=True); X = np.sqrt(D[sc].to_numpy())
-    D['c0'] = mdl['km'].predict(X); D['tid'] = D.c0.map(mdl['map']); Z = mdl['pca'].transform(X); D['x'], D['y'] = Z[:, 0], Z[:, 1]
+    D['tid'] = pd.Series(mdl['km'].predict(X)).map(mdl['map']).to_numpy(); D['sid'] = pd.Series(mdl['km2'].predict(X)).map(mdl['map2']).to_numpy(); Z = mdl['pca'].transform(X); D['x'], D['y'] = Z[:, 0], Z[:, 1]
     ld = mdl['pca'].components_; ax_names = lambda v, sign: ', '.join(PTN[i] for i in np.argsort(sign * v)[:2])
-    types = []
-    for ti, (nm, colr, desc) in enumerate(TYPE_NAMES[gname]):
-        m = D[D.tid == ti]; recent = m[m.season >= '2023-24'].sort_values('n_passes', ascending=False).drop_duplicates('name').name.head(4).map(short).tolist()
-        z = (m[sc].mean().to_numpy() - D[sc].mean().to_numpy()) / D[sc].std().to_numpy(); top = sorted(np.argsort(-z)[:3], key=lambda t: -m[sc[t]].mean())
-        types.append(dict(id=ti, name=nm, color=colr, desc=desc + (f' E.g. {", ".join(recent)}.' if recent else ''), sig=' · '.join(f'{PTN[t]} {m[sc[t]].mean() * 100:.0f}%' for t in top), mix=[round(float(v * 100), 1) for v in m[sc].mean()]))
-    share = {s: [float((D[(D.season == s)].tid == t).mean()) for t in range(KSEL[gname])] for s in SEASONS}
+    types = build_types(D, 'tid', TYPE_NAMES[gname]); styles = build_types(D, 'sid', [s[:3] for s in STYLES[gname]])
+    share = {s: [float((D[(D.season == s)].tid == t).mean()) for t in range(KSEL[gname])] for s in SEASONS}; share2 = {s: [float((D[(D.season == s)].sid == t).mean()) for t in range(KFINE[gname])] for s in SEASONS}
     D['key'] = False
     for s, d_ in D.groupby('season'):
         D.loc[d_.sort_values('n_passes', ascending=False).head(10).index, 'key'] = True; D.loc[d_.sort_values('xt90', ascending=False).head(4).index, 'key'] = True
-    pl = [dict(id=i, n=r['name'], s=short(r['name']), t=r.team if isinstance(r.team, str) else '', pos=POS.get(r.fine, '') if isinstance(r.fine, str) else '', se=r.season, c=int(r.tid), x=round(float(r.x), 4), y=round(float(r.y), 4),
+    pl = [dict(id=i, n=r['name'], s=short(r['name']), t=r.team if isinstance(r.team, str) else '', pos=POS.get(r.fine, '') if isinstance(r.fine, str) else '', se=r.season, c=int(r.tid), c2=int(r.sid), x=round(float(r.x), 4), y=round(float(r.y), 4),
                xt=None if pd.isna(r.xt90) else round(float(r.xt90), 1), p=int(r.n_passes), m=int(round(r.minutes)) if pd.notna(r.minutes) else 0, sh=[round(float(v * 100), 1) for v in r[sc]], k=bool(r.key)) for i, r in D.iterrows()]
-    payload['groups'][gname] = dict(label=GROUPS[gname].split(' (')[0], who={'DEF': 'defender', 'MID': 'midfielder', 'ATT': 'attacker'}[gname], title={'DEF': 'Four kinds of defender', 'MID': 'Three kinds of midfielder', 'ATT': 'Four kinds of attacker'}[gname] + ' in the Premier League',
-                                    types=types, players=pl, share=share, axes=dict(x=['more ' + ax_names(ld[0], 1), 'more ' + ax_names(ld[0], -1)], y=['more ' + ax_names(ld[1], 1), 'more ' + ax_names(ld[1], -1)]))
-    D.assign(type=D.tid.map(lambda t: TYPE_NAMES[gname][t][0]))[['player_id', 'name', 'season', 'team', 'fine', 'role', 'n_passes', 'minutes', 'xt90', 'type', 'x', 'y'] + sc].round(4).to_csv(DATA / f'player_types_{gname}.csv', index=False)
-    print(gname, len(D), 'player-seasons;', 'axes', payload['groups'][gname]['axes'])
+    sw = SW[SW.pos == gname].set_index('k'); st_ = lambda k: dict(k=int(k), boot=round(float(sw.bootstrap_ari[k]), 2), half=round(float(sw.half_vs_half_ari[k]), 2), era=round(float(sw.era_ari[k]), 2))
+    payload['groups'][gname] = dict(label=GROUPS[gname].split(' (')[0], who={'DEF': 'defender', 'MID': 'midfielder', 'ATT': 'attacker'}[gname], minp=CUTS[gname],
+                                    title={'DEF': 'Four kinds of defender', 'MID': 'Three kinds of midfielder', 'ATT': 'Four kinds of attacker'}[gname] + ' in the Premier League',
+                                    title2={'DEF': 'Seven styles of defender', 'MID': 'Five styles of midfielder', 'ATT': 'Six styles of attacker'}[gname] + ' in the Premier League',
+                                    types=types, styles=styles, stab=dict(c=st_(KSEL[gname]), c2=st_(KFINE[gname])), players=pl, share=share, share2=share2, axes=dict(x=['more ' + ax_names(ld[0], 1), 'more ' + ax_names(ld[0], -1)], y=['more ' + ax_names(ld[1], 1), 'more ' + ax_names(ld[1], -1)]))
+    D.assign(type=D.tid.map(lambda t: TYPE_NAMES[gname][t][0]), style=D.sid.map(lambda t: STYLES[gname][t][0]))[['player_id', 'name', 'season', 'team', 'fine', 'role', 'n_passes', 'minutes', 'xt90', 'type', 'style', 'x', 'y'] + sc].round(4).to_csv(DATA / f'player_types_{gname}.csv', index=False)
+    print(gname, len(D), 'player-seasons;', 'axes', payload['groups'][gname]['axes'], '| stability types', payload['groups'][gname]['stab']['c'], 'styles', payload['groups'][gname]['stab']['c2'])
 build_site(payload, DOCS / 'index.html'); print('wrote docs/index.html', f"({(DOCS / 'index.html').stat().st_size / 1e6:.2f} MB)")
 """)
 md("""
-**A preview of what the page shows**: defenders in 2025/26 on the fixed defender map, coloured by group.
+**A preview of what the page shows**: defenders in 2025/26 on the fixed defender map, coloured by type (left) and by finer style (right).
 """)
 code("""
-pl = payload['groups']['DEF']; P = pd.DataFrame(pl['players']); P = P[P.se == '2025-26']; colr = {t['id']: t['color'] for t in pl['types']}
-fig, ax = plt.subplots(figsize=(11, 6.5)); ax.scatter(P.x, P.y, s=40 + 330 * P.xt.fillna(0).clip(0, 12) / 12, c=P.c.map(colr), alpha=.8, edgecolors=BG)
-for _, r in P[P.k].iterrows(): ax.annotate(r.s, (r.x, r.y), xytext=(5, 3), textcoords='offset points', fontsize=8)
-ax.set_xticks([]); ax.set_yticks([]); [s.set_visible(False) for s in ax.spines.values()]
-ax.set_xlabel(f"← {pl['axes']['x'][0]}                                   {pl['axes']['x'][1]} →", color=MUTE); ax.set_ylabel(f"↓ {pl['axes']['y'][0]}          {pl['axes']['y'][1]} ↑", color=MUTE, fontsize=8)
-ax.set_title('Defenders 2025/26: dot size = pass xT per 90, colour = k-means group', loc='left'); plt.show()
-print('groups:', ' | '.join(f"{t['name']} ({t['sig']})" for t in pl['types']))
+pl = payload['groups']['DEF']; P = pd.DataFrame(pl['players']); P = P[P.se == '2025-26']
+fig, axs = plt.subplots(1, 2, figsize=(15, 6.2))
+for ax, col, ty, ttl in ((axs[0], 'c', pl['types'], 'Types (stable): 4 groups'), (axs[1], 'c2', pl['styles'], 'Styles (finer, fuzzier): 7 groups')):
+    colr = {t['id']: t['color'] for t in ty}; ax.scatter(P.x, P.y, s=30 + 260 * P.xt.fillna(0).clip(0, 12) / 12, c=P[col].map(colr), alpha=.8, edgecolors=BG)
+    for _, r in P[P.k].iterrows(): ax.annotate(r.s, (r.x, r.y), xytext=(5, 3), textcoords='offset points', fontsize=7)
+    ax.set_xticks([]); ax.set_yticks([]); [s.set_visible(False) for s in ax.spines.values()]; ax.set_title(ttl, loc='left', fontsize=10)
+axs[0].set_xlabel(f"← {pl['axes']['x'][0]}                    {pl['axes']['x'][1]} →", color=MUTE, fontsize=8); plt.suptitle('Defenders 2025/26: dot size = pass xT per 90, colour = k-means group', x=.01, ha='left'); plt.tight_layout(); plt.show()
+print('types :', ' | '.join(f"{t['name']} ({t['sig']})" for t in pl['types'])); print('styles:', ' | '.join(f"{t['name']} ({t['sig']})" for t in pl['styles']))
 """)
 md("""
-**Reading it.** The horizontal axis carries most of the differences (centre-backs on the left, full-backs on the right); within each position there is a real, stable second layer of style. The interactive page lets you hover for the full pass mix of any player, switch position and season, and follow one player across seasons.
+**Reading it.** The horizontal axis carries most of the differences (centre-backs on the left, full-backs on the right). Colouring by style shows the second layer inside each position. The interactive page lets you switch between types and styles, hover for the full pass mix of any player, switch position and season, and follow one player across seasons.
 
 ### What the groups say about change over time
 Share of each type among each position's players, by season.

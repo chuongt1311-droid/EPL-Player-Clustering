@@ -23,7 +23,7 @@ details{padding:8px 24px 22px;border-top:1px solid var(--line);font-size:13px;li
 @media(max-width:900px){main{grid-template-columns:1fr}aside{border-left:0;border-top:1px solid var(--line)}}
 </style></head><body>
 <header><h1 id="title"></h1><div class="sub" id="sub"></div><div class="note" id="note"></div></header>
-<div class="bar"><label>Position <select id="grp"></select></label><label>Season <select id="season"></select></label><label>Names <select id="names"><option value="key">Key players</option><option value="all">All players</option><option value="none">None</option></select></label>
+<div class="bar"><label>Position <select id="grp"></select></label><label>Season <select id="season"></select></label><label>Detail <select id="lvl"><option value="c">Types (stable)</option><option value="c2">Finer styles (fuzzier)</option></select></label><label>Names <select id="names"><option value="key">Key players</option><option value="all">All players</option><option value="none">None</option></select></label>
 <label>Follow a player <input id="find" list="plist" placeholder="e.g. Ben White" autocomplete="off"></label><datalist id="plist"></datalist><button id="clear">Clear</button><button class="primary" id="save">Save image (PNG)</button></div>
 <main><div id="map"></div><aside><h2 id="pn">Hover over a dot</h2><div class="meta" id="pm">Details and the full pass mix appear here. Click a dot to keep it.</div><div id="card"></div>
 <div class="hint">Bars = share of this player's open-play passes in each of the nine pass types; the black tick = the average for his type. Dot size = value created by passes (xT per 90, x100). The map is the same for every season of a position, so a player who changes style moves across it: use "Follow a player" to see the path.</div></aside></main>
@@ -31,11 +31,11 @@ details{padding:8px 24px 22px;border-top:1px solid var(--line);font-size:13px;li
 <div class="time"><h3 id="overt"></h3><div id="over"></div></div>
 <details><summary>What are the nine pass types, and how was this made?</summary>
 <p id="ptlist"></p>
-<p><b>Method.</b> 4.5 million open-play passes (2013/14 to 25 Oct 2026) were clustered with k-means into nine types using where each pass starts, how far it goes toward goal and sideways, and whether it was lofted or a cross. Each player-season is then his share of passes in each type. Players are grouped within position with k-means on those shares; the number of groups was chosen by silhouette and a bootstrap stability check. Names are the author's reading of each group's most-used passes.</p>
-<p><b>Caveats.</b> Types form a continuum, not islands (silhouette about 0.2). Position is the one a player most often started in. Pass xT (value created by completed passes) ignores carrying, defending and off-ball work; xT before 2024/25 uses a grid fitted on the same data, so compare within a season. The 2026/27 season is only 8 matches per team old: players with 200+ passes are shown (500+ in full seasons), so groups may still move. Data: WhoScored event data.</p></details>
+<p><b>Method.</b> 4.5 million open-play passes (2013/14 to 25 Oct 2026) were clustered with k-means into nine types using where each pass starts, how far it goes toward goal and sideways, and whether it was lofted or a cross. Each player-season is then his share of passes in each type. Players are grouped within position with k-means on those shares, with a separate pass cutoff and number of groups for each position, chosen by split-half reliability, silhouette and stability checks. <b>Types</b> (4, 3 and 4 groups) are the stable level; <b>styles</b> (7, 5 and 6 groups) are finer but their borders wobble, so treat them as neighbourhoods on a continuum. Names are the author's reading of each group's most-used passes.</p>
+<p><b>Caveats.</b> Types form a continuum, not islands (silhouette about 0.2). Position is the one a player most often started in. Pass xT (value created by completed passes) ignores carrying, defending and off-ball work; xT before 2024/25 uses a grid fitted on the same data, so compare within a season. The 2026/27 season is only 8 matches per team old: players with 200+ passes are shown (full seasons use a cutoff of 200 for defenders and 350 for midfielders and attackers), so groups may still move. Data: WhoScored event data.</p></details>
 <script>
 const D = __DATA__; const BG='#f7f1e3', INK='#1d1b18', MUTE='#8a8170', PT=D.pt, PC=D.ptcol;
-const gd=document.getElementById('map'); const ov=document.getElementById('over'); let G=null, season=D.seasons[D.seasons.length-2], pinned=null, follow=null, hooked=false;
+const gd=document.getElementById('map'); const ov=document.getElementById('over'); let G=null, lvl='c', season=D.seasons[D.seasons.length-2], pinned=null, follow=null, hooked=false;
 const lab=s=>s.replace('-','/')+(s===D.partial?' so far':'');
 const diam=xt=>1.25*Math.sqrt(40+330*Math.min(Math.max(xt==null?0:xt,0),12)/12);
 const gsel=document.getElementById('grp'), ssel=document.getElementById('season');
@@ -43,15 +43,17 @@ Object.keys(D.groups).forEach(k=>{const o=document.createElement('option');o.val
 D.seasons.slice().reverse().forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=lab(s);ssel.appendChild(o)}); ssel.value=season;
 document.getElementById('ptlist').innerHTML=PT.map((n,i)=>`<b style="color:${PC[i]}">${n}</b>: ${D.ptdesc[i]}`).join(' &nbsp;·&nbsp; ');
 function seasonPlayers(){ return G.players.filter(p=>p.se===season); }
+const TY=()=>lvl==='c'?G.types:G.styles, SHR=()=>lvl==='c'?G.share:G.share2;
 function setGroup(k){ G=D.groups[k]; pinned=null; follow=null; document.getElementById('find').value='';
   const dl=document.getElementById('plist'); dl.innerHTML=''; [...new Set(G.players.map(p=>p.n))].sort().forEach(n=>{const o=document.createElement('option');o.value=n;dl.appendChild(o)});
   card(null); render(); }
 function render(){
   const ps=seasonPlayers(); const mode=document.getElementById('names').value;
-  document.getElementById('title').textContent=G.title+', '+lab(season);
-  document.getElementById('sub').textContent=`k-means on each ${G.who}'s mix of the nine pass types: ${ps.length} players in ${lab(season)} (${season===D.partial?D.minp_partial:D.minp}+ passes). The map is fixed across seasons, so dots are comparable. Dot size = value created by passes (xT per 90). Hover for details.`;
-  document.getElementById('note').textContent = season===D.partial ? 'This season is only 8 matches per team old (to 25 Oct 2026): players with 200+ passes, so groups may still move.' : (season<'2024-25'?'xT before 2024/25 uses a grid fitted on the same data: compare within a season, not across.':'');
-  const tr=[]; G.types.forEach(t=>{ const idx=ps.map((p,i)=>i).filter(i=>ps[i].c===t.id);
+  document.getElementById('title').textContent=(lvl==='c'?G.title:G.title2)+', '+lab(season);
+  document.getElementById('sub').textContent=`k-means on each ${G.who}'s mix of the nine pass types: ${ps.length} players in ${lab(season)} (${season===D.partial?D.minp_partial:G.minp}+ passes). The map is fixed across seasons, so dots are comparable. Dot size = value created by passes (xT per 90). Hover for details.`;
+  const sb=G.stab[lvl]; const base = season===D.partial ? 'This season is only 8 matches per team old (to 25 Oct 2026): players with 200+ passes, so groups may still move.' : (season<'2024-25'?'xT before 2024/25 uses a grid fitted on the same data: compare within a season, not across.':'');
+  document.getElementById('note').textContent = (lvl==='c2' ? `Styles are fuzzy neighbourhoods, not hard categories: ${sb.k} groups, resample stability ${sb.boot}, and a player's odd-match and even-match mixes agree on his style only ${sb.half} (1 = always). ` : `${sb.k} groups, resample stability ${sb.boot}. `) + base;
+  const tr=[]; TY().forEach(t=>{ const idx=ps.map((p,i)=>i).filter(i=>ps[i][lvl]===t.id);
     tr.push({type:'scatter',mode:mode==='none'?'markers':'markers+text',name:t.name,x:idx.map(i=>ps[i].x),y:idx.map(i=>ps[i].y),customdata:idx.map(i=>ps[i].id),
       text:idx.map(i=>mode==='all'||(mode==='key'&&ps[i].k)?ps[i].s:''),textposition:'middle right',textfont:{size:11,color:INK,family:'Georgia'},
       marker:{size:idx.map(i=>diam(ps[i].xt)),color:t.color,opacity:follow?0.3:0.8,line:{color:BG,width:1}},
@@ -70,21 +72,21 @@ function render(){
     gd.on('plotly_hover',ev=>{ const pt=ev.points[0]; if(pt.customdata!==undefined && pinned===null) card(pt.customdata); });
     gd.on('plotly_unhover',()=>{ if(pinned===null) card(null); });
     gd.on('plotly_click',ev=>{ const pt=ev.points[0]; if(pt.customdata!==undefined){ pinned=pt.customdata; card(pinned);} }); }
-  const cnt={}; ps.forEach(p=>cnt[p.c]=(cnt[p.c]||0)+1);
-  document.getElementById('groups').innerHTML=G.types.map(t=>{const m=ps.filter(p=>p.c===t.id), xt=m.filter(p=>p.xt!=null).map(p=>p.xt), a=xt.length?(xt.reduce((u,v)=>u+v,0)/xt.length).toFixed(1):'n/a';
+    document.getElementById('groups').innerHTML=TY().map(t=>{const m=ps.filter(p=>p[lvl]===t.id), xt=m.filter(p=>p.xt!=null).map(p=>p.xt), a=xt.length?(xt.reduce((u,v)=>u+v,0)/xt.length).toFixed(1):'n/a';
     return `<div class="g" style="border-color:${t.color}"><b style="color:${t.color}">${t.name}</b><div class="n">${m.length} players in ${lab(season)} · pass xT/90 ${a}</div><div>${t.desc}</div><div>Plays most: ${t.sig}</div></div>`}).join('');
   drawOver(); }
 function drawOver(){ const ss=D.seasons; document.getElementById('overt').textContent='How the types changed: share of '+G.label.toLowerCase()+' in each type, by season';
-  const tr=G.types.map(t=>({type:'bar',name:t.name,x:ss.map(s=>s.slice(2).replace('-','/')+(s===D.partial?'*':'')),y:ss.map(s=>100*(G.share[s]?G.share[s][t.id]:0)),marker:{color:t.color},hovertemplate:'%{x}: %{y:.0f}%<extra>'+t.name+'</extra>'}));
+  const tr=TY().map(t=>({type:'bar',name:t.name,x:ss.map(s=>s.slice(2).replace('-','/')+(s===D.partial?'*':'')),y:ss.map(s=>100*(SHR()[s]?SHR()[s][t.id]:0)),marker:{color:t.color},hovertemplate:'%{x}: %{y:.0f}%<extra>'+t.name+'</extra>'}));
   Plotly.react(ov,tr,{barmode:'stack',paper_bgcolor:BG,plot_bgcolor:BG,font:{family:'Georgia, serif',color:INK,size:12},margin:{l:42,r:10,t:6,b:36},yaxis:{ticksuffix:'%',range:[0,100],gridcolor:'#e4dcc6'},xaxis:{tickangle:-45},legend:{orientation:'h',y:-0.32,font:{size:11}}},{displayModeBar:false,responsive:true}); }
 function card(id){ const el=document.getElementById('card'); if(id===null){ document.getElementById('pn').textContent='Hover over a dot'; document.getElementById('pm').textContent='Details and the full pass mix appear here. Click a dot to keep it.'; el.innerHTML=''; return; }
-  const p=G.players.find(q=>q.id===id); if(!p) return; const t=G.types.find(x=>x.id===p.c);
+  const p=G.players.find(q=>q.id===id); if(!p) return; const t=TY().find(x=>x.id===p[lvl]);
   document.getElementById('pn').textContent=p.n; document.getElementById('pm').innerHTML=`${lab(p.se)} · ${p.t?p.t+' · ':''}${p.pos}`;
   const order=[...Array(9).keys()].sort((a,b)=>p.sh[b]-p.sh[a]);
   el.innerHTML=`<div class="stat"><span style="color:${t.color}">●</span> <b style="color:${t.color}">${t.name}</b><br>Pass xT/90: <b>${p.xt==null?'n/a (under the minutes needed)':p.xt}</b> · ${p.p.toLocaleString()} passes · ${p.m.toLocaleString()} minutes</div>`+
    order.map(j=>`<div class="row"><span>${PT[j]}</span><div class="track"><div class="fill" style="width:${Math.min(p.sh[j]*2.2,100)}%;background:${PC[j]}"></div><div class="tick" style="left:${Math.min(t.mix[j]*2.2,100)}%"></div></div><span>${p.sh[j].toFixed(0)}%</span></div>`).join(''); }
 gsel.onchange=e=>setGroup(e.target.value); ssel.onchange=e=>{season=e.target.value;pinned=null;card(null);render()};
 document.getElementById('names').onchange=()=>render();
+document.getElementById('lvl').onchange=e=>{lvl=e.target.value;pinned=null;card(null);render()};
 document.getElementById('find').onchange=e=>{ const q=e.target.value.trim().toLowerCase(); if(!q) return; const all=[...new Set(G.players.map(p=>p.n))]; let n=all.find(x=>x.toLowerCase()===q)||all.find(x=>x.toLowerCase().includes(q));
   if(n){ follow=n; const tp=G.players.filter(p=>p.n===n).sort((a,b)=>a.se<b.se?-1:1); if(!tp.some(p=>p.se===season)){season=tp[tp.length-1].se; ssel.value=season;} const cur=G.players.find(p=>p.n===n&&p.se===season); pinned=cur.id; card(pinned); render(); } };
 document.getElementById('clear').onclick=()=>{follow=null;pinned=null;document.getElementById('find').value='';card(null);render()};
