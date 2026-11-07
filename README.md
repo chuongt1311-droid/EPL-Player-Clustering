@@ -30,7 +30,7 @@ k-means on 4.5 million open-play passes (2013/14 to October 2026) gives nine pas
 - **Player groups within position**, pooled over all seasons so a player can move between groups, at two levels:
   - **Types** (stable): four kinds of defender, three of midfielder, four of attacker. The largest k that is still clearly stable.
   - **Styles** (finer, fuzzier): seven of defender, five of midfielder, six of attacker. Local stability peaks; read them as neighbourhoods on a continuum, not hard categories. The page has a switch between the two.
-- **Each position has its own pass cutoff**, chosen so every position reaches the same reliability (about 0.80) for the nine shares: 200 passes for defenders, 350 for midfielders and attackers. A flat 500 kept only half of the attackers, who pass about 27 times per 90 minutes against 40 to 43 for defenders and midfielders.
+- **Each position has its own pass cutoff**, set from split-half reliability of the nine shares (a floor of about 0.70 to 0.75 for the players just above the cutoff): 150 passes for defenders, 250 for midfielders and attackers. A flat 500 kept only half of the attackers, who pass about 27 times per 90 minutes against 40 to 43 for defenders and midfielders.
 - **Not found: a "recycler" midfielder.** The Recycle share is 7 to 10% in every midfield group, and clustering midfielders on completion probability, backward-pass share and pass length gives one smooth line from safe to forward, not a separate group.
 
 ## Running the notebook

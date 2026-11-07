@@ -433,7 +433,7 @@ Everything is reproducible by running the scripts in this order: flags, pass tab
 | Features | start_x, start_w, dx, dy_folded (z-scored); chipped, cross (raw 0/1, weight 2) |
 | Clusters (final) | 10 fitted, 2 merged into 9 |
 | xP model | gradient-boosted trees, 200 iterations, seed 0, folds by match |
-| Min passes for player tables | Defenders 200, midfielders 350, attackers 350 (full seasons; see the update at the end); 200 (2026-27 so far) |
+| Min passes for player tables | Defenders 150, midfielders 250, attackers 250 (full seasons; see the update at the end); 200 (2026-27 so far) |
 | xT grid | 12 by 8, fitted on seasons before 2024-25 |
 | Player k-means | square-root shares; k by silhouette and 30 bootstrap pairs of 80% resamples |
 
@@ -441,15 +441,15 @@ Everything is reproducible by running the scripts in this order: flags, pass tab
 
 **Why.** I felt four groups were too few to show all the archetypes, and that attackers were being cut too hard: they pass about 27 times per 90 minutes against 40 (defenders) and 43 (midfielders), so a flat 500-pass cutoff kept 75% of defenders and midfielders but only 49% of attackers.
 
-**Cutoffs.** I rebuilt the player table with a floor of 150 passes and measured split-half reliability (odd against even matches, Spearman-Brown corrected) in 100-pass windows within each position. One rule for all: the lowest cutoff whose next window reaches about 0.80. Result: **200 passes for defenders, 350 for midfielders, 350 for attackers**. That keeps 1,945 defender, 1,259 midfielder and 977 attacker player-seasons (before: 1,517, 1,107, 699). Midfielders need more passes than defenders because their mixes are less distinct.
+**Cutoffs.** I rebuilt the player table with a floor of 150 passes and measured split-half reliability (odd against even matches, Spearman-Brown corrected) in 100-pass windows within each position. A strict bar of 0.80 for every window gives 200 (defenders), 350 (midfielders) and 350 (attackers). I then lowered it, because that threw away many players: the final cutoffs are **150 passes for defenders, 250 for midfielders, 250 for attackers**. That keeps 2,026 defender, 1,367 midfielder and 1,175 attacker player-seasons (a flat 500 kept 1,517, 1,107, 699). The price: the 100 passes just above each cutoff have reliability of about 0.76 (defenders), 0.71 (midfielders) and 0.77 (attackers), and overall reliability is 0.85 to 0.91 (0.89 to 0.94 at 500). Midfielders need more passes than defenders because their mixes are less distinct.
 
-**Number of groups.** k from 2 to 12 per position, with five checks (silhouette, bootstrap ARI, odd-vs-even-match agreement, early-vs-late-era agreement, smallest group). Stability drops fast after k = 3 or 4 everywhere, and the cutoff changes it only by a few hundredths. At k = 6 or 7 the same player lands in the same group only about half the time when his odd and even matches are clustered separately (a pessimistic test, since each half has half the passes).
+**Number of groups.** k from 2 to 12 per position, with five checks (silhouette, bootstrap ARI, odd-vs-even-match agreement, early-vs-late-era agreement, smallest group). Stability drops fast after k = 3 or 4 everywhere, and the cutoff changes it only by a few hundredths (the exception: attackers' early-vs-late-era agreement for types fell from 0.53 to 0.43 when the cutoff went from 350 to 250). At k = 6 or 7 the same player lands in the same group only about half the time when his odd and even matches are clustered separately (a pessimistic test, since each half has half the passes).
 
 | | Types (stable) | Bootstrap ARI | Odd/even ARI | Era ARI | Styles (finer) | Bootstrap ARI | Odd/even ARI | Era ARI |
 |---|---|---|---|---|---|---|---|---|
-| Defenders | k = 4 | 0.86 | 0.70 | 0.66 | k = 7 | 0.89 | 0.51 | 0.51 |
-| Midfielders | k = 3 | 0.90 | 0.57 | 0.62 | k = 5 | 0.82 | 0.46 | 0.35 |
-| Attackers | k = 4 | 0.88 | 0.55 | 0.53 | k = 6 | 0.82 | 0.45 | 0.47 |
+| Defenders | k = 4 | 0.93 | 0.68 | 0.67 | k = 7 | 0.89 | 0.50 | 0.50 |
+| Midfielders | k = 3 | 0.96 | 0.54 | 0.62 | k = 5 | 0.83 | 0.45 | 0.31 |
+| Attackers | k = 4 | 0.90 | 0.49 | 0.43 | k = 6 | 0.87 | 0.42 | 0.52 |
 
 **Decision.** Two levels. **Types** are the largest clearly stable k and carry the conclusions. **Styles** are local stability peaks: more interesting (for defenders: overlapping, crossing and inverted full-backs; diagonal, ball-progressing, direct and wide centre-backs; for attackers: crossers, wing-combination wingers, inside forwards, roaming creators, link-up strikers) but with wobbly borders, so they are labelled fuzzy. The page has a switch.
 

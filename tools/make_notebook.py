@@ -642,17 +642,17 @@ for lo in range(150, 551, 50):
 print('reliability of the nine shares for player-seasons with lo to lo+100 passes:'); display(pd.DataFrame(rows).set_index('passes from').round(2))
 """)
 md("""
-**Reading it.** Reliability climbs with the number of passes in every position, but defenders reach about 0.85 at 200 passes, while midfielders and attackers need about 350 to get to 0.80. Midfielders' mixes are the least distinct, so they need more passes for the same reliability. I use one rule for all three: **the lowest cutoff whose next 100-pass window reaches reliability of about 0.80**. That is 200 for defenders, 350 for midfielders and 350 for attackers.
+**Reading it.** Reliability climbs with the number of passes in every position. A strict bar of 0.80 for every 100-pass window would put the cutoff at 200 for defenders and 350 for midfielders and attackers. That throws away many players, so I **relaxed it to a floor of about 0.70 to 0.75**: **150 passes for defenders (the lowest I measured), 250 for midfielders and 250 for attackers**. Midfielders' mixes are the least distinct, so they need more passes for the same reliability. The price is noisier players at the margin: the 100 passes just above each cutoff have reliability of about 0.76 (defenders), 0.71 (midfielders) and 0.77 (attackers), against 0.85 or more for full-volume players. The stability checks in 10.2 were run at these cutoffs.
 """)
 code("""
-CUTS = {'DEF': 200, 'MID': 350, 'ATT': 350}
+CUTS = {'DEF': 150, 'MID': 250, 'ATT': 250}
 tab = []
 for g_ in GROUPS:
     d = S2[S2.grp == g_]; tab.append(dict(position=GROUPS[g_].split(' (')[0], kept_at_500=int((d.n_passes >= 500).sum()), pct_kept_at_500=round(100 * (d.n_passes >= 500).mean()), cutoff=CUTS[g_], kept_at_cutoff=int((d.n_passes >= CUTS[g_]).sum()), reliability_at_cutoff=round(rel((S2.grp == g_).to_numpy() & (S2.n_passes >= CUTS[g_]).to_numpy()), 3)))
 display(pd.DataFrame(tab).set_index('position'))
 """)
 md("""
-**Reading it.** A flat 500-pass cutoff kept three quarters of defenders and midfielders but only about half of the attackers, who simply pass less. With a cutoff per position I keep roughly 28% more defenders, 14% more midfielders and 40% more attackers, at about the same overall reliability. Attackers still have the fewest rows because there are fewer of them.
+**Reading it.** A flat 500-pass cutoff kept three quarters of defenders and midfielders but only about half of the attackers, who simply pass less. With a cutoff per position I keep about 34% more defenders, 23% more midfielders and 68% more attackers, and overall reliability stays at 0.85 to 0.91 (against 0.89 to 0.94 at 500). Attackers still have the fewest rows because there are fewer of them.
 
 ### 10.2 How many groups? A sweep per position
 For each position, at its own cutoff, k from 2 to 12 with five checks:
@@ -683,8 +683,8 @@ for g_ in GROUPS: print(GROUPS[g_], f'({int(SW[SW.pos == g_].n.iloc[0]):,} playe
 md("""
 **Reading it.**
 - **Stability falls fast after k = 3 or 4 in every position.** Two groups is always the clearest split (for defenders it is just centre-backs against full-backs). By k = 6 or 7 the same player lands in the same group only about half the time when his odd and even matches are clustered separately, and early and late seasons find different groups.
-- **A few k values beat their neighbours** on bootstrap stability: **k = 7 for defenders** (about 0.9), **k = 5 for midfielders** (about 0.8) and **k = 6 for attackers** (about 0.8). They are local peaks, not strong ones.
-- The cutoff matters little: lowering it changes these numbers by a few hundredths.
+- **A few k values beat their neighbours** on bootstrap stability: **k = 7 for defenders** (about 0.9), **k = 5 for midfielders** (about 0.83) and **k = 6 for attackers** (about 0.87). They are local peaks, not strong ones.
+- The cutoff matters little for stability: moving from 200/350/350 to 150/250/250 changed these numbers by a few hundredths, except that the attackers' era agreement for types fell from 0.53 to 0.43.
 
 So I keep two levels. The **types** (4 defenders, 3 midfielders, 4 attackers) are the largest k that is still clearly stable, and are what I draw conclusions from. The **styles** (7, 5, 6) are the local stability peaks: finer, more interesting, but their borders wobble. Read them as neighbourhoods on a continuum, not as hard categories.
 
