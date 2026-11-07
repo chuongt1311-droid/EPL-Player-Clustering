@@ -1,5 +1,6 @@
 """Builds docs/index.html: the interactive explorer (defenders, midfielders, attackers; every season 2013/14 to 2026/27 so far).
 Called by the last section of the notebook. Plotly is loaded from a CDN, everything else is inline."""
+import base64
 import json
 from pathlib import Path
 
@@ -26,7 +27,7 @@ details{padding:8px 24px 22px;border-top:1px solid var(--line);font-size:13px;li
 </style></head><body>
 <header><h1 id="title"></h1><div class="sub" id="sub"></div><div class="note" id="note"></div></header>
 <div class="bar"><label>Position <select id="grp"></select></label><label>Season <select id="season"></select></label><label>Carry level <select id="carry"><option value="all">All</option><option value="2">High carriers</option><option value="1">Mid carriers</option><option value="0">Low carriers</option></select></label><label>Dot size <select id="dsize"><option value="pass">Pass xT/90</option><option value="carry">Carry xT/90</option><option value="both">Pass + carry xT/90</option></select></label><label>Detail <select id="lvl"><option value="c">Types (stable)</option><option value="c2">Finer styles (fuzzier)</option></select></label><label>Names <select id="names"><option value="key">Key players</option><option value="all">All players</option><option value="none">None</option></select></label>
-<label>Follow a player <input id="find" list="plist" placeholder="e.g. Ben White" autocomplete="off"></label><datalist id="plist"></datalist><button id="clear">Clear</button><button class="primary" id="save">Save image (PNG)</button></div>
+<label>Follow a player <input id="find" list="plist" placeholder="e.g. Ben White" autocomplete="off"></label><datalist id="plist"></datalist><button id="clear">Clear</button><label>Credit <input id="credit" value="@chuongt1311-droid" style="width:150px"></label><button class="primary" id="save">Save image (PNG)</button></div>
 <main><div id="map"></div><aside><h2 id="pn">Hover over a dot</h2><div class="meta" id="pm">Details and the full pass mix appear here. Click a dot to keep it.</div><div id="card"></div>
 <div class="hint">Bars = share of this player's open-play passes in each of the nine pass types; the black tick = the average for his type. Dot size = value created (xT per 90, x100; passes by default, or carries, or both). The map is the same for every season of a position, so a player who changes style moves across it: use "Follow a player" to see the path. Click a dot to keep it: the <b>Plays like</b> list below it names the eight players with the closest mix, and the season each one matched in. Click a name to jump there.</div></aside></main>
 <div class="groups" id="groups"></div>
@@ -65,6 +66,51 @@ function carryHtml(p){ const nm=['Carries','Progressive','Take-ons','Carry xT'],
   const sty=TY().find(x=>x.id===p[lvl]).name; const tag=`${sty} \u00b7 <b>${TN[p.ct]} carrier</b>${p.dt===2?' \u00b7 <b>dribbler</b>':''}`;
   return `<div class="sim"><h3>Carrying</h3><div class="meta" style="margin:0 0 4px">per 90 minutes; bar = percentile among ${G.who}s in ${lab(p.se)}</div>${rows}<div class="stat" style="margin-top:6px">${tag}</div><div class="hint" style="margin-top:2px">Take-ons per carry ${p.tpc} (the dribbler index; top third among ${G.who}s = dribbler).${p.se===D.partial?' Provisional: 8 matches.':''} Carries are inferred from event data: where the ball went with the player, not how fast or under what pressure.</div></div>`; }
 function jumpTo(g,p){ gsel.value=g; setGroup(g); season=p.se; ssel.value=season; pinned=p.id; card(p.id); render(); }
+function renderExport(){
+  const ps=seasonPlayers(), ty=TY(), k=ty.length, S=2, PTs=1.389, FONT='Georgia, "DejaVu Serif", serif', GARNET='#8b1e2d';
+  const cols=Math.min(k,4), rows=Math.ceil(k/cols), W=1200, L=95, R=1150, partial=season===D.partial, T=partial?200:178, B=T+640, H=B+78+rows*100+120;
+  const cv=document.createElement('canvas'); cv.width=W*S; cv.height=H*S; const c=cv.getContext('2d'); c.scale(S,S); c.fillStyle=BG; c.fillRect(0,0,W,H);
+  const txt=(s,x,y,size,color,o={})=>{ c.font=`${o.style||''} ${o.weight||''} ${size}px ${FONT}`; c.fillStyle=color; c.textAlign=o.align||'left'; c.textBaseline=o.base||'alphabetic'; c.fillText(s,x,y); };
+  const who=G.label.toLowerCase(), credit=(document.getElementById('credit').value||'').trim();
+  txt(`K-means clustering: ${who} (${lvl==='c'?'types':'styles'})`,L,64,31,INK,{weight:'bold'});
+  txt(`Premier League ${lab(season)}`,L,96,18,MUTE);
+  if(credit) txt(`Chart by ${credit}`,L,120,13.5,MUTE,{style:'italic'});
+  if(partial) txt('Only 8 matches per team old (to 25 Oct 2026): players with 200+ passes, so groups may still move.',L,credit?144:120,13,GARNET,{style:'italic'});
+  const xs=ps.map(p=>p.x), ys=ps.map(p=>p.y), xlo=Math.min(...xs)-0.08, xhi=Math.max(...xs)+0.08, ylo=Math.min(...ys)-0.06, yhi=Math.max(...ys)+0.06;
+  const X=x=>L+(x-xlo)/(xhi-xlo)*(R-L), Y=y=>B-(y-ylo)/(yhi-ylo)*(B-T), mx=dsize==='both'?16:12, sArea=v=>40+330*Math.min(Math.max(v==null?0:v,0),mx)/mx, rad=v=>Math.sqrt(sArea(v))/2*PTs;
+  const arrow=(x0,y0,x1,y1)=>{ c.strokeStyle=MUTE; c.fillStyle=MUTE; c.lineWidth=1.1; c.beginPath(); c.moveTo(x0,y0); c.lineTo(x1,y1); c.stroke(); const a=Math.atan2(y1-y0,x1-x0); [[x1,y1,a],[x0,y0,a+Math.PI]].forEach(([x,y,t])=>{ c.beginPath(); c.moveTo(x,y); c.lineTo(x-9*Math.cos(t-0.33),y-9*Math.sin(t-0.33)); c.lineTo(x-9*Math.cos(t+0.33),y-9*Math.sin(t+0.33)); c.closePath(); c.fill(); }); };
+  arrow(L,B,R,B); arrow(L,B,L,T);
+  const A=G.axes; txt(A.x[0],L,B+30,13.5,MUTE); txt(A.x[1],R,B+30,13.5,MUTE,{align:'right'});
+  c.save(); c.translate(L-18,T); c.rotate(-Math.PI/2); txt(A.y[1],0,0,13.5,MUTE,{align:'right'}); c.restore(); c.save(); c.translate(L-18,B); c.rotate(-Math.PI/2); txt(A.y[0],0,0,13.5,MUTE); c.restore();
+  const col=p=>ty.find(t=>t.id===p[lvl]).color, vis=p=>okC(p), dots=ps.map(p=>({p,x:X(p.x),y:Y(p.y),r:rad(xtv(p))}));
+  const order=dots.map((d,i)=>i).sort((a,b)=>((dots[b].p.k?1e6:0)+dots[b].p.p)-((dots[a].p.k?1e6:0)+dots[a].p.p)), placed=[], labels=[], FS=11.6, ang=[0,25,-25,50,-50,90,-90,130,-130,160,-160,180,70,-70,110,-110], rings=[2,8,19,33,48];
+  c.font=`${FS}px ${FONT}`;
+  for(const i of order){ const d=dots[i]; if(!vis(d.p)) continue; const w=c.measureText(d.p.s).width, h=FS*1.1; let done=false;
+    for(let ri=0;ri<rings.length&&!done;ri++){ const r=d.r+rings[ri]*PTs;
+      for(const a of ang){ const dx=Math.cos(a*Math.PI/180), dy=-Math.sin(a*Math.PI/180), ha=dx>0.3?'l':(dx<-0.3?'r':'c'), va=Math.abs(dy)<0.5?'c':(dy<0?'b':'t'), tx=d.x+r*dx, tyy=d.y+r*dy;
+        const x0=ha==='l'?tx:(ha==='r'?tx-w:tx-w/2), y0=va==='c'?tyy-h/2:(va==='b'?tyy-h:tyy), bx=x0-w*0.02, by=y0-h*0.06, bw=w*1.04, bh=h*1.12, box={x0:bx,y0:by,x1:bx+bw,y1:by+bh};
+        if(box.x0<L-70||box.x1>R+14||box.y0<T-6||box.y1>B+2) continue;
+        if(placed.some(o=>box.x0<o.x1&&box.x1>o.x0&&box.y0<o.y1&&box.y1>o.y0)) continue;
+        if(dots.some((o,j)=>{ if(j===i) return false; const cx=Math.min(Math.max(o.x,box.x0),box.x1), cy=Math.min(Math.max(o.y,box.y0),box.y1); return (cx-o.x)**2+(cy-o.y)**2<(o.r*0.9)**2; })) continue;
+        placed.push(box); labels.push({i,box,x:x0,y:y0,ri}); done=true; break; } } }
+  dots.forEach(d=>{ c.globalAlpha=vis(d.p)?0.78:0.1; c.fillStyle=col(d.p); c.strokeStyle=BG; c.lineWidth=1.2; c.beginPath(); c.arc(d.x,d.y,d.r,0,2*Math.PI); c.fill(); c.stroke(); }); c.globalAlpha=1;
+  labels.forEach(l=>{ const d=dots[l.i]; if(l.ri>=1){ const cx=Math.min(Math.max(d.x,l.box.x0),l.box.x1), cy=Math.min(Math.max(d.y,l.box.y0),l.box.y1), dist=Math.hypot(d.x-cx,d.y-cy)||1, ux=(d.x-cx)/dist, uy=(d.y-cy)/dist, ex=d.x-ux*(d.r+1), ey=d.y-uy*(d.r+1);
+      c.strokeStyle=MUTE; c.fillStyle=MUTE; c.lineWidth=0.85; c.beginPath(); c.moveTo(cx,cy); c.lineTo(ex,ey); c.stroke(); const t=Math.atan2(uy,ux); c.beginPath(); c.moveTo(ex,ey); c.lineTo(ex-5.5*Math.cos(t-0.4),ey-5.5*Math.sin(t-0.4)); c.lineTo(ex-5.5*Math.cos(t+0.4),ey-5.5*Math.sin(t+0.4)); c.closePath(); c.fill(); }
+    c.font=`${FS}px ${FONT}`; c.textAlign='left'; c.textBaseline='top'; c.lineWidth=3.4; c.strokeStyle=BG; c.lineJoin='round'; c.strokeText(d.p.s,l.x,l.y); c.fillStyle=INK; c.fillText(d.p.s,l.x,l.y); });
+  const mu=[...Array(9).keys()].map(j=>ps.reduce((a,p)=>a+p.sh[j],0)/ps.length), sd=mu.map((m,j)=>Math.sqrt(ps.reduce((a,p)=>a+(p.sh[j]-m)**2,0)/ps.length)||1), cw=(R-L)/cols, y0c=B+78;
+  ty.forEach((t,j)=>{ const x0=L+(j%cols)*cw, y=y0c+Math.floor(j/cols)*100, m=ps.filter(p=>p[lvl]===t.id), xv=m.filter(p=>p.xt!=null).map(p=>p.xt), a=xv.length?(xv.reduce((u,v)=>u+v,0)/xv.length).toFixed(1):'n/a';
+    c.fillStyle=t.color; c.fillRect(x0,y+2,14,80); let nf=16.5; c.font=`bold ${nf}px ${FONT}`; while(c.measureText(t.name).width>cw-38&&nf>11){ nf-=0.5; c.font=`bold ${nf}px ${FONT}`; } txt(t.name,x0+24,y+17,nf,t.color,{weight:'bold'}); txt(`${m.length} players · pass xT/90 ${a}`,x0+24,y+38,12.8,INK);
+    if(m.length){ const mm=[...Array(9).keys()].map(q=>m.reduce((u,p)=>u+p.sh[q],0)/m.length), top=[...Array(9).keys()].sort((u,v)=>(mm[v]-mu[v])/sd[v]-(mm[u]-mu[u])/sd[u]).slice(0,3).sort((u,v)=>mm[v]-mm[u]);
+      const words=('Plays most: '+top.map(q=>`${PT[q]} ${mm[q].toFixed(0)}%`).join(' · ')).split(' '); let line='', yy=y+57; c.font=`12px ${FONT}`;
+      for(const wd of words){ const tr=line?line+' '+wd:wd; if(c.measureText(tr).width>cw-40&&line){ txt(line,x0+24,yy,12,MUTE); yy+=15; line=wd; } else line=tr; } if(line) txt(line,x0+24,yy,12,MUTE); } });
+  const vals=dsize==='both'?[2,8,14]:[2,6,10]; vals.forEach((v,q)=>{ const cx=L+16+q*95; c.fillStyle='#b9b09a'; c.beginPath(); c.arc(cx,H-88,rad(v),0,2*Math.PI); c.fill(); txt(String(v),cx+rad(v)+8,H-88,12.5,MUTE,{base:'middle'}); });
+  txt('Closer dots pass alike. Colour = k-means group. Names: as many as fit, most-used players first; an arrow marks a name placed away from its dot.',L,H-54,12,MUTE);
+  txt('Dot size: '+(dsize==='pass'?'passing threat per 90 minutes (xT, x100)':dsize==='carry'?'carrying threat per 90 minutes (carry xT, x100)':'passing + carrying threat per 90 minutes (xT, x100)'),L,H-28,12.5,MUTE); txt('Data: WhoScored',R,H-28,12.5,MUTE,{align:'right'});
+  return cv; }
+async function exportPng(){
+  const cv=renderExport();
+  if(D.logo){ await new Promise(res=>{ const im=new Image(); im.onload=()=>{ const h=84, w=im.width/im.height*h; cv.getContext('2d').drawImage(im,1150-w,34,w,h); res(); }; im.onerror=res; im.src=D.logo; }); }
+  cv.toBlob(b=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=`kmeans_${G.label.toLowerCase()}_${lvl==='c'?'types':'styles'}_${season}.png`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),3000); },'image/png'); }
 function seasonPlayers(){ return G.players.filter(p=>p.se===season); }
 const TY=()=>lvl==='c'?G.types:G.styles, SHR=()=>lvl==='c'?G.share:G.share2;
 function setGroup(k){ G=D.groups[k]; GK=k; pinned=null; follow=null; document.getElementById('find').value='';
@@ -117,11 +163,14 @@ document.getElementById('lvl').onchange=e=>{lvl=e.target.value;pinned=null;card(
 document.getElementById('find').onchange=e=>{ const q=e.target.value.trim().toLowerCase(); if(!q) return; const all=[...new Set(G.players.map(p=>p.n))]; let n=all.find(x=>x.toLowerCase()===q)||all.find(x=>x.toLowerCase().includes(q));
   if(n){ follow=n; const tp=G.players.filter(p=>p.n===n).sort((a,b)=>a.se<b.se?-1:1); if(!tp.some(p=>p.se===season)){season=tp[tp.length-1].se; ssel.value=season;} const cur=G.players.find(p=>p.n===n&&p.se===season); pinned=cur.id; card(pinned); render(); } };
 document.getElementById('clear').onclick=()=>{follow=null;pinned=null;document.getElementById('find').value='';card(null);render()};
-document.getElementById('save').onclick=()=>Plotly.downloadImage(gd,{format:'png',filename:'player_types',width:2400,height:1900,scale:1});
+document.getElementById('save').onclick=()=>exportPng();
 setGroup(Object.keys(D.groups)[0]);
 </script></body></html>"""
 
 
 def build_site(payload: dict, out_path) -> None:
+    logo = Path(__file__).resolve().parent / 'images' / 'premier_league_logo.png'        # optional: drop your own copy here (not included in the repo)
+    if logo.exists():
+        payload = dict(payload, logo='data:image/png;base64,' + base64.b64encode(logo.read_bytes()).decode())
     html = TEMPLATE.replace('__DATA__', json.dumps(payload, ensure_ascii=False, separators=(',', ':')))
     Path(out_path).write_text(html, encoding='utf-8')
