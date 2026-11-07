@@ -31,7 +31,8 @@ This notebook runs the whole project from the first line of data preparation to 
 | 9 | Role drift: how a player's passing changes |
 | 10 | **Player k-means** by position, pooled over 13 seasons, and the interactive page |
 | 11 | What changed in the league |
-| 12 | Limitations |
+| 12 | **Carrying**: do carries add to the picture? (reliability, overlap with passing, clustering, player identification, carrier or dribbler) |
+| 13 | Limitations |
 
 **How to run it.** The raw event data (WhoScored) is *not* in this repository (licence and size). The cells that need it are marked, and the outputs stored in this notebook come from the author's run with the data. Everything from Part 10 on can be re-run from the small files in `data/`. See the README for details.
 """)
@@ -777,8 +778,55 @@ for gname in ('DEF', 'MID'):
 md("**Reading it.** Within a position the current-season shares are less reliable (about 0.75 to 0.78, against 0.9 and more for a full season), so the page flags the current season as provisional.")
 
 md("""
-### 10.4 Putting every player-season on the map and building the page
-Each player-season (13 full seasons at its position's cutoff, plus the current one so far) gets: its type and its style, coordinates on a **fixed map per position** (PCA of the nine shares), pass xT per 90, and the details shown on hover. The share of each group by season feeds the "how the types changed" chart. The page itself is written by `build_site.py` into `docs/index.html`, which GitHub Pages serves, with a switch between the stable **types** and the finer **styles**.
+### 10.4 Carry measures for the page
+The page also describes how each player carries the ball: four measures (carries, progressive carries and take-ons per 90 minutes, and carry xT per 90), a three-level carry tier, and a dribbler index (take-ons per carry). Part 12 shows why this is a separate layer and not part of the pass k-means.
+
+A *carry* is the SPADL `dribble` action: the ball moved between two consecutive events of the same team. It is **inferred**, so it says where the ball went with a player, not how fast or under what pressure. A *take-on* is an attempt to beat an opponent, counted whether or not it succeeded. The functions live in `carries.py` (unit tests in `tests/`). **Needs the raw SPADL data the first time**; cached afterwards.
+""")
+code("""
+import sys; sys.path.insert(0, str(ROOT)); import carries as cr
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import cross_val_predict
+from sklearn.metrics import cohen_kappa_score
+MEAS = ['car90', 'prog90', 'to90', 'xt90c', 'gain90']; MEAS4 = ['car90', 'prog90', 'to90', 'xt90c']
+fcs, fcv, fzn = CACHE / 'carry_sums.parquet', CACHE / 'carry_coverage.csv', CACHE / 'carry_zones.parquet'
+if not (fcs.exists() and fcv.exists() and fzn.exists()):
+    cols_ = ['game_id', 'team_id', 'player_id', 'type_name', 'result_name', 'start_x', 'start_y', 'end_x', 'end_y', 'season']; ACT, GAM = [], []
+    for tag in [f'h{a:02d}{a + 1:02d}' for a in range(13, 25)] + ['pl']:
+        a_ = pd.read_parquet(SPADL / f'actions_{tag}.parquet', columns=cols_); ACT.append(a_[a_.type_name.isin(['dribble', 'take_on'])]); GAM.append(pd.read_parquet(SPADL / f'games_{tag}.parquet')[['game_id', 'home_team_id']].drop_duplicates())
+    ACT = pd.concat(ACT, ignore_index=True); GAM = pd.concat(GAM).drop_duplicates('game_id')
+    tg = ACT.groupby('season').game_id.nunique() * 2                                          # team-games per season
+    cov = pd.DataFrame({'carries_per_team_game': ACT[ACT.type_name == 'dribble'].groupby('season').size() / tg, 'takeons_per_team_game': ACT[ACT.type_name == 'take_on'].groupby('season').size() / tg,
+                        'takeon_success_rate': ACT[ACT.type_name == 'take_on'].groupby('season').result_name.apply(lambda r: (r == 'success').mean())}); cov.to_csv(fcv)
+    pg = pp[['player_id', 'season', 'game_id', 'date']].drop_duplicates().sort_values(['player_id', 'season', 'date', 'game_id']); pg['half'] = pg.groupby(['player_id', 'season']).cumcount() % 2
+    mins_g = pm.groupby(['player_id', 'season', 'game_id']).minutes.sum().reset_index()
+    cr.carry_sums(ACT, GAM, pg[['player_id', 'season', 'game_id', 'half']], mins_g, flat).to_parquet(fcs)
+    c_ = ACT[ACT.type_name == 'dribble'].merge(GAM, on='game_id').dropna(subset=['player_id', 'start_x', 'start_y']); aw = (c_.team_id != c_.home_team_id).to_numpy()
+    c_['sx'] = np.where(aw, 105 - c_.start_x, c_.start_x); c_['sy'] = np.where(aw, 68 - c_.start_y, c_.start_y); c_['player_id'] = c_.player_id.astype('int64')
+    c_['final_share'] = (c_.sx >= 70).astype(float); c_['own_share'] = (c_.sx < 35).astype(float); c_['wide_share'] = ((c_.sy - 34).abs() >= 17).astype(float)
+    c_.groupby(['player_id', 'season'])[['final_share', 'own_share', 'wide_share']].mean().reset_index().to_parquet(fzn); del ACT, c_
+CS, COV, ZN = pd.read_parquet(fcs), pd.read_csv(fcv, index_col=0), pd.read_parquet(fzn)
+M_all = cr.carry_measures(CS); mask_ = (S2.n_passes >= S2.grp.map(CUTS).fillna(10**9)).to_numpy(); P2 = S2[mask_].reset_index(drop=True)
+CP = P2[['player_id', 'season', 'name', 'grp', 'role', 'minutes', 'n_passes']].join(M_all, on=['player_id', 'season'])
+TIER_CUTS, DRIB_CUTS = {}, {}; CP['comp'] = np.nan; CP['tier'] = None; CP['dtier'] = None
+for g_ in GROUPS:
+    m = (CP.grp == g_).to_numpy(); ref = CP.loc[m, MEAS + ['to_per_carry']]; comp = cr.carry_composite(ref, ref); TIER_CUTS[g_] = cr.tier_cuts(comp); DRIB_CUTS[g_] = cr.tier_cuts(ref.to_per_carry)
+    CP.loc[m, 'comp'] = comp.to_numpy(); CP.loc[m, 'tier'] = cr.carry_tier(comp, TIER_CUTS[g_]).to_numpy(); CP.loc[m, 'dtier'] = cr.carry_tier(ref.to_per_carry, DRIB_CUTS[g_]).to_numpy()
+zin = lambda M: np.c_[np.log1p(M.car90.clip(lower=0)), np.log1p(M.prog90.clip(lower=0)), np.log1p(M.to90.clip(lower=0)), M.xt90c]
+Z0 = zin(CP.dropna(subset=MEAS4)); ZMU, ZSD = Z0.mean(0), Z0.std(0)                           # pooled z-parameters for the similarity block
+VP = float(np.sqrt(P2[sc].to_numpy()).var(0).sum()); W_CARRY = 0.25; CW = float(np.sqrt(W_CARRY * VP / 4))
+MA, MB = cr.carry_measures(CS, half=0), cr.carry_measures(CS, half=1); ix = pd.MultiIndex.from_frame(CP[['player_id', 'season']]); A_, B_ = MA.reindex(ix).reset_index(drop=True), MB.reindex(ix).reset_index(drop=True)
+okn = (A_[MEAS4].notna().all(axis=1) & B_[MEAS4].notna().all(axis=1)).to_numpy(); hp = [np.sqrt(h[mask_][okn] / h[mask_][okn].sum(1, keepdims=True)) for h in HALF]
+XAn, XBn = np.hstack([hp[0], (zin(A_[okn]) - ZMU) / ZSD * CW]), np.hstack([hp[1], (zin(B_[okn]) - ZMU) / ZSD * CW]); NOISE_C = float(np.median(np.sqrt(((XAn - XBn) ** 2).sum(1))) / np.sqrt(2))   # noise scale of the carrying-aware distance
+print(f'noise scale of the similar-player distance with carries (two full seasons): {NOISE_C:.3f}')
+print(f'{len(CP):,} player-seasons at the page cutoffs; carry measures available for {CP.car90.notna().mean():.1%} (minutes floor {cr.MIN_MINUTES})')
+print('tier cut points (composite z):', {k: tuple(round(x, 2) for x in v) for k, v in TIER_CUTS.items()}, '| similarity carry-block scale', round(CW, 4))
+display(CP.groupby('grp')[MEAS4 + ['to_per_carry']].mean().round(2))
+""")
+
+md("""
+### 10.5 Putting every player-season on the map and building the page
+Each player-season (13 full seasons at its position's cutoff, plus the current one so far) gets: its type and its style, its carry measures and tier, coordinates on a **fixed map per position** (PCA of the nine shares), pass xT per 90, and the details shown on hover. The share of each group by season feeds the "how the types changed" chart. The page itself is written by `build_site.py` into `docs/index.html`, which GitHub Pages serves, with a switch between the stable **types** and the finer **styles**.
 """)
 code("""
 import sys; sys.path.insert(0, str(ROOT)); from build_site import build_site
@@ -789,7 +837,8 @@ full = S2[S2.n_passes >= S2.grp.map(CUTS).fillna(10**9)]
 ALL = pd.concat([full, cur[full.columns.intersection(cur.columns)]], ignore_index=True)
 ok_ = (S2.n_passes >= S2.grp.map(CUTS).fillna(10**9)).to_numpy()
 Ah, Bh = [np.sqrt(h[ok_] / h[ok_].sum(1, keepdims=True)) for h in HALF]; noise_ = float(np.median(np.sqrt(((Ah - Bh) ** 2).sum(1))) / np.sqrt(2)); print(f'noise scale for the similar-player list (Hellinger, two full seasons, players at their position cutoffs): {noise_:.3f}')
-payload = dict(pt=PTN, ptcol=COL, ptdesc=DESC, seasons=SEASONS, partial='2026-27', minp_partial=200, noise=round(noise_, 3), nb=8, groups={})
+payload = dict(pt=PTN, ptcol=COL, ptdesc=DESC, seasons=SEASONS, partial='2026-27', minp_partial=200, noise=round(noise_, 3), nb=8, cw=round(CW, 4), noisec=round(NOISE_C, 3), groups={})
+TIERN = {'low': 0, 'mid': 1, 'high': 2}
 def build_types(D, tcol, names):
     types = []
     for ti, nm in enumerate(names):
@@ -803,19 +852,25 @@ for gname in GROUPS:
     ld = mdl['pca'].components_; ax_names = lambda v, sign: ', '.join(PTN[i] for i in np.argsort(sign * v)[:2])
     types = build_types(D, 'tid', TYPE_NAMES[gname]); styles = build_types(D, 'sid', [s[:3] for s in STYLES[gname]])
     share = {s: [float((D[(D.season == s)].tid == t).mean()) for t in range(KSEL[gname])] for s in SEASONS}; share2 = {s: [float((D[(D.season == s)].sid == t).mean()) for t in range(KFINE[gname])] for s in SEASONS}
+    D = D.join(M_all, on=['player_id', 'season']); ref = CP[CP.grp == gname][MEAS + ['to_per_carry']]
+    D['comp'] = cr.carry_composite(D[MEAS + ['to_per_carry']], ref).to_numpy(); D['tier'] = cr.carry_tier(D.comp, TIER_CUTS[gname]).to_numpy(); D['dtier'] = cr.carry_tier(D.to_per_carry, DRIB_CUTS[gname]).to_numpy()
+    for f_ in MEAS4: D['pc_' + f_] = D.groupby('season')[f_].rank(pct=True) * 100
+    Zp = (zin(D) - ZMU) / ZSD; D[['z0', 'z1', 'z2', 'z3']] = Zp
     D['key'] = False
     for s, d_ in D.groupby('season'):
         D.loc[d_.sort_values('n_passes', ascending=False).head(10).index, 'key'] = True; D.loc[d_.sort_values('xt90', ascending=False).head(4).index, 'key'] = True
     pl = [dict(id=i, n=r['name'], s=short(r['name']), t=r.team if isinstance(r.team, str) else '', pos=POS.get(r.fine, '') if isinstance(r.fine, str) else '', se=r.season, c=int(r.tid), c2=int(r.sid), x=round(float(r.x), 4), y=round(float(r.y), 4),
-               xt=None if pd.isna(r.xt90) else round(float(r.xt90), 1), p=int(r.n_passes), m=int(round(r.minutes)) if pd.notna(r.minutes) else 0, sh=[round(float(v * 100), 1) for v in r[sc]], k=bool(r.key)) for i, r in D.iterrows()]
+               xt=None if pd.isna(r.xt90) else round(float(r.xt90), 1), p=int(r.n_passes), m=int(round(r.minutes)) if pd.notna(r.minutes) else 0, sh=[round(float(v * 100), 1) for v in r[sc]], k=bool(r.key),
+               cm=None if pd.isna(r.car90) else [round(float(r[f_]), 1) for f_ in MEAS4], cp=None if pd.isna(r.car90) else [int(round(r['pc_' + f_])) for f_ in MEAS4], ct=TIERN.get(r.tier), dt=TIERN.get(r.dtier), tpc=None if pd.isna(r.car90) else round(float(r.to_per_carry), 2),
+               cz=None if pd.isna(r.car90) else [round(float(r[z_]), 2) for z_ in ('z0', 'z1', 'z2', 'z3')]) for i, r in D.iterrows()]
     sw = SW[SW.pos == gname].set_index('k'); st_ = lambda k: dict(k=int(k), boot=round(float(sw.bootstrap_ari[k]), 2), half=round(float(sw.half_vs_half_ari[k]), 2), era=round(float(sw.era_ari[k]), 2))
     payload['groups'][gname] = dict(label=GROUPS[gname].split(' (')[0], who={'DEF': 'defender', 'MID': 'midfielder', 'ATT': 'attacker'}[gname], minp=CUTS[gname],
                                     title={'DEF': 'Four kinds of defender', 'MID': 'Three kinds of midfielder', 'ATT': 'Four kinds of attacker'}[gname] + ' in the Premier League',
                                     title2={'DEF': 'Seven styles of defender', 'MID': 'Five styles of midfielder', 'ATT': 'Six styles of attacker'}[gname] + ' in the Premier League',
-                                    types=types, styles=styles, stab=dict(c=st_(KSEL[gname]), c2=st_(KFINE[gname])), players=pl, share=share, share2=share2, axes=dict(x=['more ' + ax_names(ld[0], 1), 'more ' + ax_names(ld[0], -1)], y=['more ' + ax_names(ld[1], 1), 'more ' + ax_names(ld[1], -1)]))
+                                    ctiers=[round(TIER_CUTS[gname][0], 3), round(TIER_CUTS[gname][1], 3)], dcuts=[round(DRIB_CUTS[gname][0], 3), round(DRIB_CUTS[gname][1], 3)], types=types, styles=styles, stab=dict(c=st_(KSEL[gname]), c2=st_(KFINE[gname])), players=pl, share=share, share2=share2, axes=dict(x=['more ' + ax_names(ld[0], 1), 'more ' + ax_names(ld[0], -1)], y=['more ' + ax_names(ld[1], 1), 'more ' + ax_names(ld[1], -1)]))
     D.assign(type=D.tid.map(lambda t: TYPE_NAMES[gname][t][0]), style=D.sid.map(lambda t: STYLES[gname][t][0]))[['player_id', 'name', 'season', 'team', 'fine', 'role', 'n_passes', 'minutes', 'xt90', 'type', 'style', 'x', 'y'] + sc].round(4).to_csv(DATA / f'player_types_{gname}.csv', index=False)
     print(gname, len(D), 'player-seasons;', 'axes', payload['groups'][gname]['axes'], '| stability types', payload['groups'][gname]['stab']['c'], 'styles', payload['groups'][gname]['stab']['c2'])
-build_site(payload, DOCS / 'index.html'); print('wrote docs/index.html', f"({(DOCS / 'index.html').stat().st_size / 1e6:.2f} MB)")
+json.dump(payload, open(CACHE / 'payload.json', 'w', encoding='utf-8'), separators=(',', ':')); build_site(payload, DOCS / 'index.html'); print('wrote docs/index.html', f"({(DOCS / 'index.html').stat().st_size / 1e6:.2f} MB)")
 """)
 md("""
 ### A similar-player list on the page
@@ -886,7 +941,149 @@ md("""
 
 # ======================================================================================================== 12
 md("""
-## 12. Limitations
+## 12. Carrying: do carries add to the picture?
+
+Passing describes player archetypes well. Can carrying be added to tell players and archetypes apart better? I tested this *before* putting anything on the page, with eight checks. The short answer: **carries tell individual players apart, but they do not make the k-means groups more stable**, so they are a separate layer.
+
+**Data and definitions.** Carries are inferred (see 10.4). Away teams are flipped so every team attacks toward x = 105. A *progressive* carry moves the ball 10 m or more closer to the goal centre. Carry xT uses the same pre-2024/25 grid as pass xT. Per-90 measures need 450 minutes.
+
+### 12.1 Is the data steady across seasons?
+""")
+code("""
+display(COV.round(2).T)
+assert COV.carries_per_team_game.between(165, 195).all()
+print('carries per team-game range:', COV.carries_per_team_game.min().round(0), 'to', COV.carries_per_team_game.max().round(0), '| take-on success rate:', COV.takeon_success_rate.iloc[0].round(2), 'in', COV.index[0], 'to', COV.takeon_success_rate.iloc[-2].round(2), 'in', COV.index[-2])
+""")
+md("""
+**Reading it.** The number of carries is steady (about 170 to 190 per team-game in every season). The take-on **success rate** is not: it falls from about 0.5 to about 0.4 over the period, a tagging or era effect like the Chipped tag. So I count take-on *attempts* and never use success.
+
+### 12.2 How reliable are the carry measures?
+Split-half reliability (odd against even matches, Spearman-Brown) within position, with the pass-share reliability from Part 10.1 (about 0.85 to 0.91) for comparison.
+""")
+code("""
+sbf = lambda r: 2 * r / (1 + r)
+FE = MEAS + ['to_per_carry']
+rel_c = pd.DataFrame({g_: {f: sbf(np.corrcoef(A_.loc[(CP.grp == g_).to_numpy() & A_[f].notna().to_numpy() & B_[f].notna().to_numpy(), f], B_.loc[(CP.grp == g_).to_numpy() & A_[f].notna().to_numpy() & B_[f].notna().to_numpy(), f])[0, 1]) for f in FE} for g_ in GROUPS})
+display(rel_c.round(2)); assert (rel_c.loc['car90'] >= 0.85).all()
+""")
+md("""
+**Reading it.** Carries, progressive carries and take-ons per 90 are as reliable as the pass shares or better (0.85 to 0.96). Carry xT is a little weaker (0.76 to 0.83). Take-ons per carry (the dribbler index) is reliable too (0.84 to 0.89).
+
+### 12.3 Is carrying just a restatement of passing?
+5-fold cross-validated R-squared of each carry quantity predicted from the nine pass shares, within position. High means the pass mix already says it. The three zone shares are the share of a player's carries that *start* in the final third, in his own third, and wide.
+""")
+code("""
+Zr = CP.merge(ZN, on=['player_id', 'season'], how='left'); Xs = np.sqrt(P2[sc].to_numpy()); r2 = {}
+for g_ in GROUPS:
+    r2[g_] = {}
+    for f in MEAS4 + ['final_share', 'own_share', 'wide_share']:
+        m = ((Zr.grp == g_) & Zr[f].notna()).to_numpy(); y = Zr.loc[m, f].to_numpy(); pr = cross_val_predict(Ridge(1e-3), Xs[m], y, cv=5); r2[g_][f] = 1 - ((y - pr) ** 2).sum() / ((y - y.mean()) ** 2).sum()
+r2 = pd.DataFrame(r2); display(r2.round(2))
+assert (r2.loc[['final_share', 'own_share', 'wide_share']] > 0.55).all(axis=None) and (r2.loc['prog90'] < 0.45).all()
+""")
+md("""
+**Reading it.** *Where* a carry starts is mostly already in the pass mix (R-squared 0.6 to 0.97), because it reflects where the player plays. *How much* a player carries and takes on is much less so (0.2 to 0.46): that is new information. So I keep the per-90 volume measures and drop the zone shares.
+
+### 12.4 Do carries make the player groups more stable?
+At the page's number of groups (types 4/3/4, styles 7/5/6), passes only against passes plus the four carry measures (carry block weighted at 25% of the pass block's variance). Stability is bootstrap ARI and odd-vs-even agreement as in Part 10.2; `vs passes` is the ARI between the two partitions (1 = identical).
+""")
+code("""
+rng = np.random.default_rng(1); rows = []
+blk = lambda M: np.c_[np.log1p(M.car90.clip(lower=0)), np.log1p(M.prog90.clip(lower=0)), np.log1p(M.to90.clip(lower=0)), M.xt90c]
+for g_, ks in (('DEF', (4, 7)), ('MID', (3, 5)), ('ATT', (4, 6))):
+    m = ((CP.grp == g_) & CP[MEAS4].notna().all(axis=1) & A_[MEAS4].notna().all(axis=1) & B_[MEAS4].notna().all(axis=1)).to_numpy(); D_ = CP[m]
+    mu_, sd_ = blk(D_).mean(0), blk(D_).std(0); Zc = (blk(D_) - mu_) / sd_; ZA_, ZB_ = (blk(A_[m]) - mu_) / sd_, (blk(B_[m]) - mu_) / sd_
+    Xp_ = np.sqrt(P2.loc[m, sc].to_numpy()); Vp_ = Xp_.var(0).sum(); sc_ = np.sqrt(0.25 * Vp_ / 4); HA_, HB_ = [np.sqrt(h[mask_][m] / h[mask_][m].sum(1, keepdims=True)) for h in HALF]
+    for k in ks:
+        res = {}
+        for nm, (X, XA, XB) in {'passes': (Xp_, HA_, HB_), 'passes + carries': (np.hstack([Xp_, Zc * sc_]), np.hstack([HA_, ZA_ * sc_]), np.hstack([HB_, ZB_ * sc_]))}.items():
+            km_ = KMeans(k, n_init=20, random_state=0).fit(X); bs = []
+            for b in range(20):
+                i = rng.choice(len(X), int(.8 * len(X)), replace=False); jj = rng.choice(len(X), int(.8 * len(X)), replace=False)
+                bs.append(ari(KMeans(k, n_init=5, random_state=b).fit(X[i]).predict(X), KMeans(k, n_init=5, random_state=b + 100).fit(X[jj]).predict(X)))
+            res[nm] = (np.mean(bs), ari(km_.predict(XA), km_.predict(XB)), km_.labels_)
+        rows.append(dict(pos=g_, k=k, boot_passes=res['passes'][0], boot_with_carries=res['passes + carries'][0], half_passes=res['passes'][1], half_with_carries=res['passes + carries'][1], vs_passes=ari(res['passes'][2], res['passes + carries'][2])))
+stab = pd.DataFrame(rows).set_index(['pos', 'k']); display(stab.round(2)); assert (stab.half_with_carries - stab.half_passes).abs().max() < 0.15
+""")
+md("""
+**Reading it.** Adding the carry block does not make the groups firmer, and for the finer groups it makes them *less* stable: odd-vs-even agreement changes by between -0.15 and +0.06, and bootstrap stability falls for the styles of midfielders (0.86 to 0.64) and attackers (0.88 to 0.60), while rising a little for the defender and attacker types. The partitions also change a lot (ARI with the passes-only partition 0.3 to 0.8), because carrying volume is a new direction in the data. (A fuller version of this test with all carry features and several weights gave the same answer: stable k does not rise.) So carries do **not** justify more or better k-means groups, and I leave the pass types and styles alone.
+
+### 12.5 Do carries help tell players apart?
+The test from Part 7: given a player-season's odd matches, how often is the *same player-season's even matches* the nearest of all? Passes only against passes plus the carry block at several weights. The page uses weight 0.25.
+""")
+code("""
+okp = (A_[MEAS4].notna().all(axis=1) & B_[MEAS4].notna().all(axis=1) & CP[MEAS4].notna().all(axis=1)).to_numpy(); Dk = CP[okp]
+ZA2, ZB2 = (zin(A_[okp]) - ZMU) / ZSD, (zin(B_[okp]) - ZMU) / ZSD; HAk, HBk = [np.sqrt(h[mask_][okp] / h[mask_][okp].sum(1, keepdims=True)) for h in HALF]
+pid_, ss_ = Dk.player_id.to_numpy(), Dk.season.to_numpy(); rows = []
+for w in (0, 0.1, 0.25, 0.5, 1):
+    sc2 = np.sqrt(w * VP / 4); XA, XB = np.hstack([HAk, ZA2 * sc2]), np.hstack([HBk, ZB2 * sc2]); Dm = cdist(XA, XB); rank = (Dm < np.diag(Dm)[:, None]).sum(1) + 1
+    F_ = (XA + XB) / 2; D2 = cdist(F_, F_); D2[ss_[:, None] == ss_[None, :]] = np.inf; has = np.array([((pid_ == pid_[i]) & (ss_ != ss_[i])).any() for i in range(len(pid_))]) & np.isfinite(D2.min(1)); nn = D2.argmin(1)
+    rows.append(dict(carry_weight=w, own_other_half_nearest=(rank == 1).mean(), in_top_5=(rank <= 5).mean(), median_rank=np.median(rank), nearest_other_season_same_player=(pid_[nn] == pid_)[has].mean()))
+ident = pd.DataFrame(rows).set_index('carry_weight'); display(ident.round(3)); assert ident.own_other_half_nearest[0.25] - ident.own_other_half_nearest[0] >= 0.04
+""")
+md("""
+**Reading it.** This is where carries earn their place. A player's own other half-season is the very nearest match about 9% of the time with passes only and about 17% with carries added (median rank halves from about 26 to about 13), and the nearest season of a *different* year is the same player 13% of the time against 22%. The pass mix says what kind of player he is; the carry volumes say how individual he is within that kind. Weights of 0.1 to 0.5 all help; a weight of 1 helps less.
+
+### 12.6 A carry tier, and how it relates to pass style
+A simple, readable summary: the composite (mean z-score of log carries, progressive carries and take-ons per 90) cut into thirds *within position*. Does a player land in the same tier on his odd and on his even matches?
+""")
+code("""
+rows = []; tr = {}
+for g_ in GROUPS:
+    m = (CP.grp == g_).to_numpy() & A_[MEAS4].notna().all(axis=1).to_numpy() & B_[MEAS4].notna().all(axis=1).to_numpy(); ref = CP.loc[(CP.grp == g_).to_numpy(), MEAS + ['to_per_carry']]
+    ta, tb = [cr.carry_tier(cr.carry_composite(X.loc[m], ref), TIER_CUTS[g_]).map({'low': 0, 'mid': 1, 'high': 2}).astype(int) for X in (A_, B_)]
+    rows.append(dict(pos=g_, n=int(m.sum()), same_tier_odd_vs_even=(ta == tb).mean(), weighted_kappa=cohen_kappa_score(ta, tb, weights='linear'), low_to_high_flips=((ta - tb).abs() == 2).mean()))
+tier_rel = pd.DataFrame(rows).set_index('pos'); display(tier_rel.round(3)); assert (tier_rel.same_tier_odd_vs_even >= 0.65).all()
+for g_ in ('DEF', 'ATT'):
+    m = (CP.grp == g_).to_numpy(); sid = pd.Series(models[g_]['km2'].predict(np.sqrt(P2.loc[m, sc].to_numpy()))).map(models[g_]['map2']).map(lambda i: STYLES[g_][i][0]).to_numpy()
+    print(GROUPS[g_], ': pass style x carry tier'); display(pd.crosstab(sid, CP.loc[m, 'tier'].to_numpy()).reindex(columns=['low', 'mid', 'high']))
+""")
+md("""
+**Reading it.** The tier is usable but fuzzy: a player is in the same third on his odd and even matches about 70 to 80% of the time, and flips from low to high almost never (defenders are the weakest). Tier is related to pass style (overlapping full-backs are mostly high carriers, direct centre-backs mostly low) but not the same thing, so a label such as "overlapping full-back, high carrier" says more than either alone.
+
+### 12.7 Carrier or dribbler?
+A carry is the ball moving; a take-on is an attempt to beat an opponent. Take-ons per carry is the dribbler index. Defenders and midfielders separate clearly (a player can carry a lot and rarely take anyone on); among attackers the two go together more.
+""")
+code("""
+Fx = CP[(CP.minutes >= 900)]; print('correlation of progressive carries/90 with take-ons/90 (log scale), by position:', {g_: round(float(np.corrcoef(np.log1p(Fx[Fx.grp == g_].prog90), np.log1p(Fx[Fx.grp == g_].to90))[0, 1]), 2) for g_ in GROUPS})
+r25 = Fx[(Fx.season == '2025-26')]
+for g_ in GROUPS:
+    d = r25[r25.grp == g_]; print(f'\\n{GROUPS[g_]}, 2025/26, 900+ minutes')
+    print('  most progressive carries/90:', ', '.join(f'{r["name"]} {r.prog90:.1f}' for _, r in d.sort_values('prog90', ascending=False).head(6).iterrows()))
+    print('  most take-ons/90          :', ', '.join(f'{r["name"]} {r.to90:.1f}' for _, r in d.sort_values('to90', ascending=False).head(6).iterrows()))
+    print('  highest take-ons per carry:', ', '.join(f'{r["name"]} {r.to_per_carry:.2f}' for _, r in d.sort_values('to_per_carry', ascending=False).head(6).iterrows()))
+""")
+md("""
+**Reading it.** The names make football sense: in 2025/26 the leaders in progressive carries and take-ons are the players you would expect (Doku at the top among attackers, and defenders who carry the ball out, such as van Hecke).
+
+### 12.8 What I did not do, and the limits
+- **No carry types.** I also clustered the carries themselves (start zone, length, direction) and turned players into shares of carry types. Four of six types only restate where the carry starts (56 to 95% explained by passing), one is a long forward drive that progressive carries already measure, and one is a rare 66 m noise type. Adding them to the per-90 measures improved player identification by only 1.3 points.
+- **Carry distance** is covered by progressive carries (and goalward metres per 90). Mean carry length alone is the weakest measure (reliability 0.66 to 0.74).
+- **Carries are inferred**: no speed, no pressure, no space; a carry is not the same as beating a defender (that is a take-on). Carry xT before 2024/25 uses a grid fitted on the same data.
+- The 2026/27 season is 8 matches old: its carry measures are noisy, and its tiers use the cut points of full seasons.
+""")
+code("""
+CP[['player_id', 'name', 'season', 'grp', 'minutes', 'n_passes'] + MEAS + ['to_per_carry', 'comp', 'tier', 'dtier']].round(3).to_csv(DATA / 'carry_profiles.csv', index=False); print('wrote data/carry_profiles.csv', len(CP), 'rows')
+""")
+
+code("""
+import json
+def page_neighbours(name, season, carry, k=8):
+    rows_ = [p_ for g_ in GROUPS for p_ in payload['groups'][g_]['players']]; q = next(p_ for p_ in rows_ if name in p_['n'] and p_['se'] == season); vec = lambda p_: np.sqrt(np.array(p_['sh']) / 100); best = {}
+    for p_ in rows_:
+        if p_['n'] == q['n']: continue
+        d2 = ((vec(p_) - vec(q)) ** 2).sum()
+        if carry and p_['cz'] is not None and q['cz'] is not None: d2 += CW ** 2 * ((np.array(p_['cz']) - np.array(q['cz'])) ** 2).sum()
+        d = np.sqrt(d2)
+        if p_['n'] not in best or d < best[p_['n']][0]: best[p_['n']] = (d, p_['se'])
+    return [f'{n} {s}' for n, (d, s) in sorted(best.items(), key=lambda t: t[1][0])[:k]]
+EX = {f'{n}|{s}': {'passes_only': page_neighbours(n, s, False), 'with_carries': page_neighbours(n, s, True)} for n, s in (('Declan Rice', '2024-25'), ('Alexander-Arnold', '2024-25'), ('Saliba', '2025-26'))}
+json.dump(EX, open(DATA / 'plays_like_examples.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+for k_, v in EX.items(): print(k_); print('  passes only :', v['passes_only']); print('  with carries:', v['with_carries'])
+""")
+# ======================================================================================================== 13
+md("""
+## 13. Limitations
 
 - **A continuum, not islands.** Silhouette is about 0.2 everywhere: the nine types and the player groups are useful slicings. Names are my reading of the numbers.
 - **Choices made from a grid.** The number of clusters and the flag weight were chosen by stability; a temporal holdout (ARI about 0.83) suggests the structure carries across eras but not identically.

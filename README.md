@@ -14,6 +14,7 @@ k-means on 4.5 million open-play passes (2013/14 to October 2026) gives nine pas
 |---|---|
 | [`notebooks/EPL_Player_Clustering.ipynb`](notebooks/EPL_Player_Clustering.ipynb) | The whole project, start to end, with outputs: data preparation, the risk model, k-means, validation, players, similarity search, value, role drift, player groups, and the page. |
 | [`docs/index.html`](docs/index.html) | The interactive explorer (defenders, midfielders, attackers; every season 2013/14 to 2026/27 so far). Served by GitHub Pages. |
+| [`carries.py`](carries.py), [`tests/`](tests/) | Carry and take-on measures from the event data, with unit tests (`python -m pytest`). |
 | [`build_site.py`](build_site.py) | Writes the page from the notebook's results. |
 | [`data/`](data/) | Small derived files: the nine pass types, player-season pass mixes with their group, and the xT grid. No raw event data. |
 | [`reports/`](reports/) | A technical report, a student-style write-up of how the project was made, and a quality review of my own work. |
@@ -32,6 +33,7 @@ k-means on 4.5 million open-play passes (2013/14 to October 2026) gives nine pas
   - **Styles** (finer, fuzzier): seven of defender, five of midfielder, six of attacker. Local stability peaks; read them as neighbourhoods on a continuum, not hard categories. The page has a switch between the two.
 - **Each position has its own pass cutoff**, set from split-half reliability of the nine shares (a floor of about 0.70 to 0.75 for the players just above the cutoff): 150 passes for defenders, 250 for midfielders and attackers. A flat 500 kept only half of the attackers, who pass about 27 times per 90 minutes against 40 to 43 for defenders and midfielders.
 - **A "Plays like" list on the page.** Click a dot and it names the eight players with the closest pass mix, each at the season he matched in (for example Rice in 2024/25 plays like Tielemans in 2018/19, Diallo in 2021/22, Davies in 2016/17 ...). Distance is Hellinger; matches closer than the noise scale (0.082) cannot be told apart from sampling noise. It is a shortlist, not a twin: at 500+ passes a player's own other half-season was the very nearest only about one time in eight. Some players have no close match at all (Alexander-Arnold in 2024/25: nearest 0.101).
+- **Carrying (secondary layer).** Per 90 minutes the page shows carries, progressive carries, take-ons and carry xT with percentiles, a three-level carry tier, and a dribbler tag (take-ons per carry). Carries were tested for the clustering and do **not** make the groups more stable (for finer groups slightly less), so types and styles use passes only; but carries roughly double how often a player's own other half-season is found as the nearest match (9% to 17%), so they are in the Plays like list (switch). A carry is inferred from event data: no speed, space or pressure.
 - **Not found: a "recycler" midfielder.** The Recycle share is 7 to 10% in every midfield group, and clustering midfielders on completion probability, backward-pass share and pass length gives one smooth line from safe to forward, not a separate group.
 
 ## Running the notebook

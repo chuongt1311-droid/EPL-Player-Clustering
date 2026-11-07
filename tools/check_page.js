@@ -1,0 +1,24 @@
+// Browser-pane checks for docs/index.html (serve docs/ with `python -m http.server 8765`, open the page, run this with the javascript tool).
+// Compares the page's Plays like lists with data/plays_like_examples.json (written by the notebook) and checks the carrying block, carry filter and dot size.
+(() => {
+  const EX = {
+    'Declan Rice|2024-25': { passes_only: ['Youri Tielemans 2018-19', 'Ibrahima Diallo 2021-22', 'Tom Davies 2016-17', 'Stephen Ireland 2013-14', 'Renato Sanches 2017-18', 'Jordan Henderson 2013-14', 'David Meyler 2014-15', 'Leon Osman 2013-14'], with_carries: ['Youri Tielemans 2018-19', 'Jordan Henderson 2013-14', 'Granit Xhaka 2021-22', 'Steven Davis 2017-18', 'Enzo Fernández 2026-27', 'Pape Matar Sarr 2025-26', 'David Meyler 2014-15', 'Ibrahima Diallo 2021-22'] },
+    'Alexander-Arnold|2024-25': { passes_only: ['Leandro Bacuna 2015-16', 'Phil Bardsley 2016-17', 'Kieran Richardson 2014-15', 'Jeffrey Schlupp 2014-15', 'Chris Brunt 2016-17', 'Ronald Araujo 2026-27', 'Adam Smith 2026-27', 'Pedro Porro 2024-25'], with_carries: ['Leandro Bacuna 2015-16', 'Pedro Porro 2024-25', 'James Milner 2022-23', 'Chris Brunt 2014-15', 'Diogo Dalot 2022-23', 'Ronald Araujo 2026-27', 'Saman Ghoddos 2023-24', 'Kieran Tierney 2022-23'] },
+    'Saliba|2025-26': { passes_only: ['Wesley Fofana 2025-26', 'Ezri Konsa 2024-25', 'John Stones 2021-22', 'Josh Acheampong 2025-26', 'Micky van de Ven 2023-24', 'Lisandro Martínez 2023-24', 'Andreas Christensen 2021-22', 'Lewis Dunk 2026-27'], with_carries: ['Wesley Fofana 2025-26', 'Ezri Konsa 2024-25', 'Micky van de Ven 2023-24', 'Lisandro Martínez 2023-24', 'Malick Thiaw 2025-26', 'Jack Stephens 2024-25', 'Andreas Christensen 2021-22', 'Tyrone Mings 2024-25'] } };
+  const out = { pass: [], fail: [] }; const ok = (name, cond, extra) => (cond ? out.pass : out.fail).push(extra === undefined ? name : name + ' ' + JSON.stringify(extra));
+  const pin = (g, name, se) => { const p = D.groups[g].players.find(q => q.n.includes(name) && q.se === se); setGroup(g); season = se; ssel.value = se; gsel.value = g; pinned = p.id; card(p.id); render(); return p; };
+  const groupOf = { 'Declan Rice': 'MID', 'Alexander-Arnold': 'DEF', 'Saliba': 'DEF' };
+  for (const key of Object.keys(EX)) {                                        // Plays like, both modes: at least 6 of the 8 names agree (page stores shares rounded to 0.1)
+    const [n, se] = key.split('|'); pin(groupOf[n], n, se);
+    for (const [mode, flag] of [['with_carries', true], ['passes_only', false]]) { nCarry = flag; nPool = 'all'; nRole = false; card(pinned); const got = NBL.map(x => x.o.p.n + ' ' + x.o.p.se); const hit = got.filter(g => EX[key][mode].includes(g)).length; ok(`${key} ${mode} overlap`, hit >= 6, { hit }); }
+  }
+  nCarry = true;
+  const doku = pin('ATT', 'Doku', '2025-26'); const html = document.getElementById('card').innerHTML;
+  ok('Doku card has Carrying block with four rows and a high tier', html.includes('<h3>Carrying</h3>') && (html.match(/class="row" title="/g) || []).length === 4 && doku.ct === 2, { ct: doku.ct });
+  ok('Doku is tagged a dribbler', doku.dt === 2, { dt: doku.dt, tpc: doku.tpc });
+  carryF = '0'; render(); const full = gd.data.reduce((a, t) => a + t.marker.opacity.filter(o => o > 0.5).length, 0); const want = D.groups.ATT.players.filter(p => p.se === '2025-26' && p.ct === 0).length; ok('carry filter Low leaves exactly the low-tier points', full === want, { full, want }); carryF = 'all';
+  const nm = D.groups.DEF.players.find(p => p.cm === null); if (nm) { pin('DEF', nm.n, nm.se); ok('no-minutes row says so and has no tier', document.getElementById('card').innerHTML.includes('Not enough minutes')); } else out.pass.push('no row without carry measures in this build (skipped)');
+  const pr = D.groups.DEF.players.find(p => p.se === D.partial && p.cm); pin('DEF', pr.n, pr.se); ok('2026-27 row shows the provisional note', document.getElementById('card').innerHTML.includes('Provisional'));
+  dsize = 'carry'; render(); ok('dot size by carry xT renders', gd.data.length > 0); dsize = 'both'; render(); ok('dot size by both renders', gd.data.length > 0); dsize = 'pass'; render();
+  out.sizeMB = (document.documentElement.outerHTML.length / 1e6).toFixed(2); return out;
+})()
