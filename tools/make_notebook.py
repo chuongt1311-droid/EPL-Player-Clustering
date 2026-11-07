@@ -787,7 +787,9 @@ def short(n):
     t = n.split(); return ' '.join(t[-2:]) if len(t) > 2 and t[-2].lower() in PART else (' '.join(t[-2:]) if len(t) == 2 and t[0].lower() in PART else t[-1])
 full = S2[S2.n_passes >= S2.grp.map(CUTS).fillna(10**9)]
 ALL = pd.concat([full, cur[full.columns.intersection(cur.columns)]], ignore_index=True)
-payload = dict(pt=PTN, ptcol=COL, ptdesc=DESC, seasons=SEASONS, partial='2026-27', minp_partial=200, groups={})
+ok_ = (S2.n_passes >= S2.grp.map(CUTS).fillna(10**9)).to_numpy()
+Ah, Bh = [np.sqrt(h[ok_] / h[ok_].sum(1, keepdims=True)) for h in HALF]; noise_ = float(np.median(np.sqrt(((Ah - Bh) ** 2).sum(1))) / np.sqrt(2)); print(f'noise scale for the similar-player list (Hellinger, two full seasons, players at their position cutoffs): {noise_:.3f}')
+payload = dict(pt=PTN, ptcol=COL, ptdesc=DESC, seasons=SEASONS, partial='2026-27', minp_partial=200, noise=round(noise_, 3), nb=8, groups={})
 def build_types(D, tcol, names):
     types = []
     for ti, nm in enumerate(names):
@@ -816,6 +818,23 @@ for gname in GROUPS:
 build_site(payload, DOCS / 'index.html'); print('wrote docs/index.html', f"({(DOCS / 'index.html').stat().st_size / 1e6:.2f} MB)")
 """)
 md("""
+### A similar-player list on the page
+Part 7 built a similar-player search. The page now has it too: click a dot and a **Plays like** list names the eight players with the closest mix, each at the season he matched in (one row per player). This cell does the same in Python, on exactly the players the page shows, so the two can be compared.
+""")
+code("""
+def plays_like(name, season, k=8, same_season=False):
+    q = ALL[ALL.name.str.lower().str.contains(name.lower()) & (ALL.season == season)]
+    if len(q) != 1: return f'{len(q)} matches'
+    q = q.iloc[0]; C = ALL[(ALL.name != q['name']) & ((ALL.season == season) if same_season else True)].copy()
+    C['distance'] = np.sqrt(((np.sqrt(C[sc].to_numpy()) - np.sqrt(q[sc].to_numpy(float))) ** 2).sum(1)); C = C.sort_values('distance').drop_duplicates('name').head(k)
+    gap = lambda r: ', '.join(f'{PTN[j]} {d:+.0f}' for j, d in sorted(enumerate((r[sc].to_numpy(float) - q[sc].to_numpy(float)) * 100), key=lambda t: -abs(t[1]))[:2])
+    C['differs by (pts)'] = C.apply(gap, axis=1); C['within noise'] = C.distance <= noise_
+    return C[['name', 'season', 'role', 'distance', 'within noise', 'differs by (pts)']].reset_index(drop=True).round({'distance': 3})
+for nm, ss in (('Declan Rice', '2024-25'), ('Alexander-Arnold', '2024-25'), ('Saliba', '2025-26')): print(nm, ss); display(plays_like(nm, ss))
+""")
+md("""
+**Reading it.** The list mixes seasons: a player is similar to *A in one season and B in another*, which is the point of searching across time. Distances inside the noise scale cannot be told apart from sampling noise; and with only nine shares many players of the same type sit close together, so the list is a shortlist, not a twin.
+
 **A preview of what the page shows**: defenders in 2025/26 on the fixed defender map, coloured by type (left) and by finer style (right).
 """)
 code("""

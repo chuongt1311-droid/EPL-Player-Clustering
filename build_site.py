@@ -20,18 +20,21 @@ aside{padding:14px 18px;border-left:1px solid var(--line)}aside h2{font-size:18p
 .groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;padding:12px 24px;border-top:1px solid var(--line)}.g{border-left:10px solid;padding-left:10px}.g b{font-size:15px}.g div{font-size:12.5px;color:var(--mute);margin-top:2px}.g div.n{color:var(--ink)}
 .time{padding:6px 24px 4px;border-top:1px solid var(--line)}.time h3{font-size:15px;margin:8px 0 0}#over{height:260px}
 details{padding:8px 24px 22px;border-top:1px solid var(--line);font-size:13px;line-height:1.55;color:var(--mute)}summary{cursor:pointer;color:var(--ink);font-size:14px}details b{color:var(--ink)}
+.sim{margin-top:14px;border-top:1px solid var(--line);padding-top:8px}.sim h3{font-size:15px;margin:0 0 4px}.sim .ctl{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;font-size:12px;color:var(--mute);margin-bottom:6px}.sim select{font-size:12px;padding:3px 5px}
+.nb{padding:6px 8px;margin:3px -8px;border-radius:6px;cursor:pointer;font-size:13px;line-height:1.35}.nb:hover{background:#efe6cf}.nb .m{color:var(--mute);font-size:12px}.nb .w{color:var(--garnet)}
 @media(max-width:900px){main{grid-template-columns:1fr}aside{border-left:0;border-top:1px solid var(--line)}}
 </style></head><body>
 <header><h1 id="title"></h1><div class="sub" id="sub"></div><div class="note" id="note"></div></header>
 <div class="bar"><label>Position <select id="grp"></select></label><label>Season <select id="season"></select></label><label>Detail <select id="lvl"><option value="c">Types (stable)</option><option value="c2">Finer styles (fuzzier)</option></select></label><label>Names <select id="names"><option value="key">Key players</option><option value="all">All players</option><option value="none">None</option></select></label>
 <label>Follow a player <input id="find" list="plist" placeholder="e.g. Ben White" autocomplete="off"></label><datalist id="plist"></datalist><button id="clear">Clear</button><button class="primary" id="save">Save image (PNG)</button></div>
 <main><div id="map"></div><aside><h2 id="pn">Hover over a dot</h2><div class="meta" id="pm">Details and the full pass mix appear here. Click a dot to keep it.</div><div id="card"></div>
-<div class="hint">Bars = share of this player's open-play passes in each of the nine pass types; the black tick = the average for his type. Dot size = value created by passes (xT per 90, x100). The map is the same for every season of a position, so a player who changes style moves across it: use "Follow a player" to see the path.</div></aside></main>
+<div class="hint">Bars = share of this player's open-play passes in each of the nine pass types; the black tick = the average for his type. Dot size = value created by passes (xT per 90, x100). The map is the same for every season of a position, so a player who changes style moves across it: use "Follow a player" to see the path. Click a dot to keep it: the <b>Plays like</b> list below it names the eight players with the closest mix, and the season each one matched in. Click a name to jump there.</div></aside></main>
 <div class="groups" id="groups"></div>
 <div class="time"><h3 id="overt"></h3><div id="over"></div></div>
 <details><summary>What are the nine pass types, and how was this made?</summary>
 <p id="ptlist"></p>
 <p><b>Method.</b> 4.5 million open-play passes (2013/14 to 25 Oct 2026) were clustered with k-means into nine types using where each pass starts, how far it goes toward goal and sideways, and whether it was lofted or a cross. Each player-season is then his share of passes in each type. Players are grouped within position with k-means on those shares, with a separate pass cutoff and number of groups for each position, chosen by split-half reliability, silhouette and stability checks. <b>Types</b> (4, 3 and 4 groups) are the stable level; <b>styles</b> (7, 5 and 6 groups) are finer but their borders wobble, so treat them as neighbourhoods on a continuum. Names are the author's reading of each group's most-used passes.</p>
+<p><b>Plays like.</b> For the selected player-season the page computes the Hellinger distance (Euclidean distance between the square roots of the nine shares) to every other player-season of every position, keeps each other player's closest season, and lists the eight nearest. The noise scale is the typical distance between a player's own two half-seasons, rescaled to two full seasons: matches closer than that cannot be told apart from sampling noise. At 500+ passes the player's own other half-season was the very nearest only about one time in eight (median rank about 14 of 3,300), so read the list as a shortlist.</p>
 <p><b>Caveats.</b> Types form a continuum, not islands (silhouette about 0.2). Position is the one a player most often started in. Pass xT (value created by completed passes) ignores carrying, defending and off-ball work; xT before 2024/25 uses a grid fitted on the same data, so compare within a season. The 2026/27 season is only 8 matches per team old: players with 200+ passes are shown (full seasons use a cutoff of 150 for defenders and 250 for midfielders and attackers), so groups may still move. Data: WhoScored event data.</p></details>
 <script>
 const D = __DATA__; const BG='#f7f1e3', INK='#1d1b18', MUTE='#8a8170', PT=D.pt, PC=D.ptcol;
@@ -42,9 +45,21 @@ const gsel=document.getElementById('grp'), ssel=document.getElementById('season'
 Object.keys(D.groups).forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=D.groups[k].label;gsel.appendChild(o)});
 D.seasons.slice().reverse().forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=lab(s);ssel.appendChild(o)}); ssel.value=season;
 document.getElementById('ptlist').innerHTML=PT.map((n,i)=>`<b style="color:${PC[i]}">${n}</b>: ${D.ptdesc[i]}`).join(' &nbsp;·&nbsp; ');
+const NB=D.nb||8; let nPool='all', nRole=false, curId=null, GK=null, NBL=[], ALLP=null;
+function allp(){ if(ALLP) return ALLP; ALLP=[]; Object.keys(D.groups).forEach(g=>D.groups[g].players.forEach(p=>ALLP.push({g,p,v:p.sh.map(x=>Math.sqrt(x/100))}))); return ALLP; }
+function neighbours(p){ const q=p.sh.map(x=>Math.sqrt(x/100)), best={};
+  allp().forEach(o=>{ const r=o.p; if(r.n===p.n) return; if(nPool==='same'&&r.se!==p.se) return; if(nRole&&o.g!==GK) return;
+    let s=0; for(let i=0;i<9;i++){ const d=o.v[i]-q[i]; s+=d*d; } const d=Math.sqrt(s); if(!best[r.n]||d<best[r.n].d) best[r.n]={o,d}; });
+  return Object.values(best).sort((a,b)=>a.d-b.d).slice(0,NB); }
+function similarHtml(p){ NBL=neighbours(p);
+  const rows=NBL.map((x,i)=>{ const r=x.o.p, diff=r.sh.map((v,j)=>v-p.sh[j]), top=[...Array(9).keys()].sort((a,b)=>Math.abs(diff[b])-Math.abs(diff[a])).slice(0,2);
+    const why=top.map(j=>`${PT[j]} ${diff[j]>=0?'+':'\u2212'}${Math.abs(diff[j]).toFixed(0)}`).join(', ');
+    return `<div class="nb" data-i="${i}"><b>${r.n}</b> <span class="m">${lab(r.se)} \u00b7 ${r.pos}</span><br><span class="m">distance ${x.d.toFixed(3)}${x.d<=D.noise?' <span class="w">(within noise)</span>':''} \u00b7 differs by: ${why} pts</span></div>`; }).join('');
+  return `<div class="sim"><h3>Plays like</h3><div class="ctl"><select id="npool"><option value="all"${nPool==='all'?' selected':''}>Any season</option><option value="same"${nPool==='same'?' selected':''}>Same season only</option></select><label><input type="checkbox" id="nrole"${nRole?' checked':''}> same position group only</label></div>${rows}<div class="hint">Distance = Hellinger distance between the two pass mixes (one row per player, his closest season). Below ${D.noise} is indistinguishable from sampling noise. A shortlist, not a twin: tested at 500+ passes, a player's own other half-season was the very nearest only about one time in eight.</div></div>`; }
+function jumpTo(g,p){ gsel.value=g; setGroup(g); season=p.se; ssel.value=season; pinned=p.id; card(p.id); render(); }
 function seasonPlayers(){ return G.players.filter(p=>p.se===season); }
 const TY=()=>lvl==='c'?G.types:G.styles, SHR=()=>lvl==='c'?G.share:G.share2;
-function setGroup(k){ G=D.groups[k]; pinned=null; follow=null; document.getElementById('find').value='';
+function setGroup(k){ G=D.groups[k]; GK=k; pinned=null; follow=null; document.getElementById('find').value='';
   const dl=document.getElementById('plist'); dl.innerHTML=''; [...new Set(G.players.map(p=>p.n))].sort().forEach(n=>{const o=document.createElement('option');o.value=n;dl.appendChild(o)});
   card(null); render(); }
 function render(){
@@ -78,14 +93,16 @@ function render(){
 function drawOver(){ const ss=D.seasons; document.getElementById('overt').textContent='How the types changed: share of '+G.label.toLowerCase()+' in each type, by season';
   const tr=TY().map(t=>({type:'bar',name:t.name,x:ss.map(s=>s.slice(2).replace('-','/')+(s===D.partial?'*':'')),y:ss.map(s=>100*(SHR()[s]?SHR()[s][t.id]:0)),marker:{color:t.color},hovertemplate:'%{x}: %{y:.0f}%<extra>'+t.name+'</extra>'}));
   Plotly.react(ov,tr,{barmode:'stack',paper_bgcolor:BG,plot_bgcolor:BG,font:{family:'Georgia, serif',color:INK,size:12},margin:{l:42,r:10,t:6,b:36},yaxis:{ticksuffix:'%',range:[0,100],gridcolor:'#e4dcc6'},xaxis:{tickangle:-45},legend:{orientation:'h',y:-0.32,font:{size:11}}},{displayModeBar:false,responsive:true}); }
-function card(id){ const el=document.getElementById('card'); if(id===null){ document.getElementById('pn').textContent='Hover over a dot'; document.getElementById('pm').textContent='Details and the full pass mix appear here. Click a dot to keep it.'; el.innerHTML=''; return; }
+function card(id){ const el=document.getElementById('card'); curId=id; if(id===null){ document.getElementById('pn').textContent='Hover over a dot'; document.getElementById('pm').textContent='Details and the full pass mix appear here. Click a dot to keep it.'; el.innerHTML=''; return; }
   const p=G.players.find(q=>q.id===id); if(!p) return; const t=TY().find(x=>x.id===p[lvl]);
   document.getElementById('pn').textContent=p.n; document.getElementById('pm').innerHTML=`${lab(p.se)} · ${p.t?p.t+' · ':''}${p.pos}`;
   const order=[...Array(9).keys()].sort((a,b)=>p.sh[b]-p.sh[a]);
   el.innerHTML=`<div class="stat"><span style="color:${t.color}">●</span> <b style="color:${t.color}">${t.name}</b><br>Pass xT/90: <b>${p.xt==null?'n/a (under the minutes needed)':p.xt}</b> · ${p.p.toLocaleString()} passes · ${p.m.toLocaleString()} minutes</div>`+
-   order.map(j=>`<div class="row"><span>${PT[j]}</span><div class="track"><div class="fill" style="width:${Math.min(p.sh[j]*2.2,100)}%;background:${PC[j]}"></div><div class="tick" style="left:${Math.min(t.mix[j]*2.2,100)}%"></div></div><span>${p.sh[j].toFixed(0)}%</span></div>`).join(''); }
+   order.map(j=>`<div class="row"><span>${PT[j]}</span><div class="track"><div class="fill" style="width:${Math.min(p.sh[j]*2.2,100)}%;background:${PC[j]}"></div><div class="tick" style="left:${Math.min(t.mix[j]*2.2,100)}%"></div></div><span>${p.sh[j].toFixed(0)}%</span></div>`).join('')+similarHtml(p); }
 gsel.onchange=e=>setGroup(e.target.value); ssel.onchange=e=>{season=e.target.value;pinned=null;card(null);render()};
 document.getElementById('names').onchange=()=>render();
+document.getElementById('card').addEventListener('click',e=>{ const row=e.target.closest('.nb'); if(!row) return; const x=NBL[+row.dataset.i]; if(x) jumpTo(x.o.g,x.o.p); });
+document.getElementById('card').addEventListener('change',e=>{ if(e.target.id==='npool') nPool=e.target.value; else if(e.target.id==='nrole') nRole=e.target.checked; else return; if(curId!==null) card(curId); });
 document.getElementById('lvl').onchange=e=>{lvl=e.target.value;pinned=null;card(null);render()};
 document.getElementById('find').onchange=e=>{ const q=e.target.value.trim().toLowerCase(); if(!q) return; const all=[...new Set(G.players.map(p=>p.n))]; let n=all.find(x=>x.toLowerCase()===q)||all.find(x=>x.toLowerCase().includes(q));
   if(n){ follow=n; const tp=G.players.filter(p=>p.n===n).sort((a,b)=>a.se<b.se?-1:1); if(!tp.some(p=>p.se===season)){season=tp[tp.length-1].se; ssel.value=season;} const cur=G.players.find(p=>p.n===n&&p.se===season); pinned=cur.id; card(pinned); render(); } };
