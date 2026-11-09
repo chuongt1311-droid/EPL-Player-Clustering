@@ -57,7 +57,7 @@ export EPL_SPADL="path/to/spadl/exports"          # actions_<tag>.parquet and ga
 - The types and groups are useful slicings of a continuum, and the names are my reading of the numbers.
 - The provider's "Chipped" tag changed its behaviour partway through the period (including inside 2023/24), so the long-ball clusters were merged. Details in the notebook (Part 5.5).
 - Pass xT only values completed passes; it ignores carrying, defending and off-ball work. xT before 2024/25 uses a grid fitted on the same data, so compare within a season.
-- The current season (2026/27) is only 8 matches per team old; the page marks it provisional.
+- The current season (2026/27) is only 10 matches per team old; the page marks it provisional.
 
 ## Data note
 

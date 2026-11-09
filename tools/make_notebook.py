@@ -615,7 +615,7 @@ This is the original idea I set out to imitate (k-means on **players**, coloured
 - One clustering per position over **all seasons pooled**, so a group means the same thing in every season and a player can *move* between groups over time.
 - **Each position gets its own pass cutoff** (10.1) and its own number of groups (10.2). Attackers pass far less than defenders and midfielders, so a flat cutoff throws away half of them.
 - **Two levels:** a few *types* that are stable enough to draw conclusions from, and more *styles* that are finer but fuzzier (10.3).
-- The current season (2026/27, only 8 matches per team old) is assigned afterwards to the nearest group, for players with 200+ passes.
+- The current season (2026/27, only 10 matches per team old) is assigned afterwards to the nearest group, for players with 200+ passes.
 
 ### 10.1 A pass cutoff for each position
 A player-season is only usable if his nine shares are measured reliably. I rebuilt the player table with a low floor (150 passes) and measured **split-half reliability** (odd matches against even matches, Spearman-Brown corrected, mean of the nine shares) inside 100-pass windows, within position.
@@ -760,7 +760,7 @@ md("""
 
 **What did *not* appear: a recycler midfielder.** The Recycle share (sideways and backward passes by the wide-back type) is only 7 to 10% in every midfield group. I also tried the idea directly: clustering midfielders on their average completion probability (xP), their share of backward or sideways passes and their average pass length gives one smooth line from safe to forward, with no separate group of recyclers (silhouette 0.33 at k = 2, no better beyond). A "recycler" would need different features than the nine types, which are designed to separate where passes go, not how safe they are.
 
-Players per group in the *current* season need a threshold of 200 passes (only 8 matches have been played). I check what that costs in reliability.
+Players per group in the *current* season need a threshold of 200 passes (only 10 matches per team have been played). I check what that costs in reliability.
 """)
 code("""
 cur = table(200, seasons=['2026-27'])
@@ -775,7 +775,7 @@ hh = [pd.crosstab(d.player_id, d.cl).reindex(index=cur.player_id, columns=range(
 for gname in ('DEF', 'MID'):
     m = (cur.grp == gname).to_numpy(); rr = np.array([np.corrcoef(ha[m, c], hb[m, c])[0, 1] for c in range(9)]); print(f'{gname}: mean split-half reliability of the nine shares, full-sample scale: {np.nanmean(2 * rr / (1 + rr)):.2f}')
 """)
-md("**Reading it.** Within a position the current-season shares are less reliable (about 0.75 to 0.78, against 0.9 and more for a full season), so the page flags the current season as provisional.")
+md("**Reading it.** Within a position the current-season shares are less reliable (about 0.73 to 0.81, against 0.9 and more for a full season), so the page flags the current season as provisional.")
 
 md("""
 ### 10.4 Carry measures for the page
@@ -1060,7 +1060,7 @@ md("""
 - **No carry types.** I also clustered the carries themselves (start zone, length, direction) and turned players into shares of carry types. Four of six types only restate where the carry starts (56 to 95% explained by passing), one is a long forward drive that progressive carries already measure, and one is a rare 66 m noise type. Adding them to the per-90 measures improved player identification by only 1.3 points.
 - **Carry distance** is covered by progressive carries (and goalward metres per 90). Mean carry length alone is the weakest measure (reliability 0.66 to 0.74).
 - **Carries are inferred**: no speed, no pressure, no space; a carry is not the same as beating a defender (that is a take-on). Carry xT before 2024/25 uses a grid fitted on the same data.
-- The 2026/27 season is 8 matches old: its carry measures are noisy, and its tiers use the cut points of full seasons.
+- The 2026/27 season is 10 matches old: its carry measures are noisy, and its tiers use the cut points of full seasons.
 """)
 code("""
 CP[['player_id', 'name', 'season', 'grp', 'minutes', 'n_passes'] + MEAS + ['to_per_carry', 'comp', 'tier', 'dtier']].round(3).to_csv(DATA / 'carry_profiles.csv', index=False); print('wrote data/carry_profiles.csv', len(CP), 'rows')
@@ -1090,7 +1090,7 @@ md("""
 - **Tagging.** The provider's Chipped tag is the weakest input; its behaviour changed (including inside 2023/24), which forced the merge to nine types.
 - **No defenders, pressure or ball height.** xP measures the difficulty of a *type* of pass, not of the moment, and is not a measure of skill. Pass xT ignores carrying, defending and off-ball work.
 - **Position and team leak in.** A player's mix reflects his team's style and role as well as his habits; positions are the one a player most often started in, and formations changed over the period.
-- **Small samples where it counts.** The current season is 8 matches per team old; xT before 2024/25 uses a grid fitted on the same data.
+- **Small samples where it counts.** The current season is 10 matches per team old; xT before 2024/25 uses a grid fitted on the same data.
 
 *Data: WhoScored event data. The raw files are not redistributed. Built with an AI coding assistant (Claude Code) under the author's direction; all decisions and checks reviewed by the author.*
 """)

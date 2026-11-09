@@ -9,7 +9,7 @@
 
 I wanted to answer a simple question: **what kinds of passes do Premier League players play, and can I describe a player by the mix of passes he plays?** I started from a chart I admired (a k-means clustering of defenders by the data site PITCH IQ) and tried to rebuild it, then improve it.
 
-The improvement was to cluster the **passes** first, not the players. I took 4,508,312 open-play passes from 13 data files covering the 2013-14 season to 25 October 2026, described each pass with six numbers (where it starts, how far it travels toward goal, how far sideways, whether it was lofted, whether it was a cross), and ran k-means. After testing choices for the number of clusters, the weight of the two yes/no features, and whether PCA was needed, I settled on **nine pass types**, each with a fan-friendly name (The Recycle, The Link-up, The Wing Combo, The Diagonal, The Cross, The Out-Ball, The Push Wide, The Down-the-Line, The Long Ball).
+The improvement was to cluster the **passes** first, not the players. I took 4,526,215 open-play passes from 13 data files covering the 2013-14 season to 8 November 2026, described each pass with six numbers (where it starts, how far it travels toward goal, how far sideways, whether it was lofted, whether it was a cross), and ran k-means. After testing choices for the number of clusters, the weight of the two yes/no features, and whether PCA was needed, I settled on **nine pass types**, each with a fan-friendly name (The Recycle, The Link-up, The Wing Combo, The Diagonal, The Cross, The Out-Ball, The Push Wide, The Down-the-Line, The Long Ball).
 
 Each player-season then became a **mix of those nine types**. I checked that mix for reliability (it is a stable property of a player within a season: split-half reliability 0.95 to 0.99), built a similar-player search, added a pass-value measure (xT) as a quality layer, and measured how players change across seasons. Finally I rebuilt the original idea at the player level: k-means on defenders and midfielders, coloured by group, with pass value as dot size, for 2025/26 and the current 2026/27 season.
 
@@ -78,7 +78,7 @@ The data are event-level files from WhoScored: every on-the-ball action in every
 1. **Orientation.** Coordinates are absolute, so I flipped the away team (x becomes 105 minus x, y becomes 68 minus y) so every team attacks left to right. I checked this rather than trusting it: after flipping, crosses start at a median x of about 91 in both halves, home and away, and none start in their own half; shots show the same pattern. A flipping error would have shown up there.
 2. **Open play only.** I kept passes and crosses and excluded throw-ins, goal kicks, corners and free kicks, which are already labelled by the provider and would only have rediscovered those labels.
 
-The result is **4,508,312 open-play passes** from 14 season labels (2013-14 to 2025-26 complete, and 2026-27 so far: 8 matches per team, to 25 October 2026).
+The result is **4,526,215 open-play passes** from 14 season labels (2013-14 to 2025-26 complete, and 2026-27 so far: 10 matches per team, to 8 November 2026).
 
 ### 3.2 The qualifier flags
 
@@ -428,7 +428,7 @@ Everything is reproducible by running the scripts in this order: flags, pass tab
 
 | Setting | Value |
 |---|---|
-| Passes | 4,508,312 open-play passes, 14 season labels |
+| Passes | 4,526,215 open-play passes, 14 season labels |
 | Clustering sample | 300,000 passes, equal per season |
 | Features | start_x, start_w, dx, dy_folded (z-scored); chipped, cross (raw 0/1, weight 2) |
 | Clusters (final) | 10 fitted, 2 merged into 9 |
@@ -470,3 +470,7 @@ Does carrying add to the picture? Tested before building (notebook Part 12). Car
 - Carries do tell players apart: a player's own other half-season is the nearest match 9% of the time with passes alone and 17% with carries added (weight 0.25).
 - A three-level carry tier (thirds of a composite within position) gives the same tier on odd and even matches 70% to 79% of the time; take-ons per carry (dribbler index) has reliability 0.84 to 0.89.
 - Page: carry block on the card, carry-level filter, dot size by pass or carry xT, and an "include carrying" switch in Plays like. Limits: inferred carries, no speed or pressure; carry xT before 2024/25 uses a grid fitted on the same data; 2026/27 is 8 matches old.
+
+## Update (9 Nov 2026): new matches
+
+Twenty more 2026/27 matches (to 8 November 2026) were added: 100 matches, 10 per team, 4,526,215 open-play passes in total. The whole notebook was rerun from the raw files. The nine pass types barely moved (shares within 0.2 points, completion within 0.002); player types and styles are unchanged for 96% (defenders) to 99.7% (midfielders) of the existing player-seasons; 187 players now have 200+ passes in 2026/27 (146 before), with split-half reliability of the nine shares 0.81 for defenders and 0.73 for midfielders (0.78 and 0.75 at 8 matches). Sections above that quote figures from the 25 October build (for example the 8-match counts) are left as written.
